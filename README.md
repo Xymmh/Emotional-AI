@@ -10,6 +10,10 @@
 
 `V1.0.0` · Windows · 纯本地运行
 
+<img src="docs/screenshot-analyst.png" alt="Emotional AI 第三视角：聊天记录解读与画像自动沉淀" width="880" />
+
+*第三视角 · 分析师：粘贴聊天记录后，AI 流式解读对方性格，画像与标签自动沉淀于右上角*
+
 </div>
 
 ---
