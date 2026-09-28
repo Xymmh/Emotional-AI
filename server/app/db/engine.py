@@ -35,6 +35,21 @@ def init_db() -> None:
     from app.db import models  # noqa: F401
 
     SQLModel.metadata.create_all(get_engine())
+    _migrate_schema()
+
+
+def _migrate_schema() -> None:
+    """轻量迁移：create_all 不会给已存在的表补列，这里按需 ALTER。
+
+    SQLite 的 ALTER TABLE ADD COLUMN 是元数据操作，瞬间完成。
+    """
+    with get_engine().connect() as conn:
+        cols = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(personas)")}
+        if cols and "observations" not in cols:
+            conn.exec_driver_sql(
+                "ALTER TABLE personas ADD COLUMN observations TEXT NOT NULL DEFAULT ''"
+            )
+            conn.commit()
 
 
 def get_session() -> Iterator[Session]:

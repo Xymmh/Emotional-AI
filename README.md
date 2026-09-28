@@ -8,7 +8,7 @@
 上传一段真实的聊天记录，让 AI 以第三方视角读懂「对方」，
 再走进你的视角，替 TA 与你预演那场还没发生的对话。
 
-`V1.0.1` · Windows · 纯本地运行
+`V1.0.2` · Windows · 纯本地运行
 
 <img src="docs/screenshot-analyst.png" alt="Emotional AI 第三视角：聊天记录解读与画像自动沉淀" width="880" />
 
@@ -181,6 +181,6 @@ Emotional AI 的长期愿景，是成为每个人随身携带的「对话排练�
 
 **© 2026 Nanyang Technological University · WANG QIALUN**
 
-Emotional AI `V1.0.1`
+Emotional AI `V1.0.2`
 
 </div>

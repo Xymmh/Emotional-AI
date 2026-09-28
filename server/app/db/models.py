@@ -28,6 +28,7 @@ class Persona(SQLModel, table=True):
     summary: str = ""          # 一句话性格概述
     traits_json: str = "[]"   # JSON 字符串：性格特征数组，如 ["敏感","回避型依恋"]
     background: str = ""      # 背景描述（年龄/职业/关系等，自由文本）
+    observations: str = ""    # 分析师轮次观察记录（每行「#轮次 短句」，超长丢最旧）
     avatar_color: str = "#4a90e2"  # 前端头像配色，默认蓝
     source_import_id: str | None = None  # 来源导入记录 id，可空
     created_at: datetime = Field(default_factory=_utcnow)
@@ -77,6 +78,7 @@ class PersonaUpdate(SQLModel):
     summary: str | None = None
     traits_json: str | None = None
     background: str | None = None
+    observations: str | None = None
     avatar_color: str | None = None
 
 

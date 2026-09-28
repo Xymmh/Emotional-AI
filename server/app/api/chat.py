@@ -18,12 +18,13 @@ from app.config import get_settings
 from app.db import crud
 from app.db.models import MessageCreate
 from app.services import ark
+from app.services.context import collect_history
 from app.services.runtime import state
 from app.services.vectorstore import get_vector_store
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 
-HISTORY_LIMIT = 20      # 带入的最近消息条数
+HISTORY_BUDGET_TOKENS = 6000  # 历史窗口 token 预算（按预算从最新往回收集，条数不设上限）
 MEMORY_TOP_K = 5        # 检索的记忆条数
 MEMORY_MIN_SCORE = 0.35  # 低于该相似度的记忆不带入
 
@@ -97,11 +98,11 @@ async def chat_stream(body: ChatStreamRequest):
         MessageCreate(conversation_id=conv.id, role="user", content=content),
     )
 
-    # 2. 最近历史（含刚写入的用户消息）
+    # 2. 最近历史（含刚写入的用户消息）：token 预算内从最新往回收集
     history = await asyncio.to_thread(crud.list_messages, conv.id)
     chat_history = [
         {"role": m.role, "content": m.content}
-        for m in history[-HISTORY_LIMIT:]
+        for m in collect_history(history, HISTORY_BUDGET_TOKENS)
         if m.role in ("user", "assistant")
     ]
 
