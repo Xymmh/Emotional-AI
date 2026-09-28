@@ -25,21 +25,38 @@ const appApi = {
       onDelta: (text: string) => void,
       onThought?: (text: string) => void,
       onStatus?: (text: string) => void,
+      streamId?: string,
     ): Promise<{ ok: boolean }> => {
-      const deltaListener = (_e: IpcRendererEvent, text: string) => onDelta(text)
-      const thoughtListener = (_e: IpcRendererEvent, text: string) => onThought?.(text)
-      const statusListener = (_e: IpcRendererEvent, text: string) => onStatus?.(text)
+      // 每路流分配唯一 ID：并发流的 delta 广播按 ID 认领，防止内容串到别的对话；
+      // 同一 ID 也是中断的凭据（chat.stop / chat:abort）
+      const sid = streamId ?? crypto.randomUUID()
+      const deltaListener = (_e: IpcRendererEvent, eid: string, text: string) => {
+        if (eid === sid) onDelta(text)
+      }
+      const thoughtListener = (_e: IpcRendererEvent, eid: string, text: string) => {
+        if (eid === sid) onThought?.(text)
+      }
+      const statusListener = (_e: IpcRendererEvent, eid: string, text: string) => {
+        if (eid === sid) onStatus?.(text)
+      }
       ipcRenderer.on('chat:delta', deltaListener)
       ipcRenderer.on('chat:thought', thoughtListener)
       ipcRenderer.on('chat:status', statusListener)
       return ipcRenderer
-        .invoke('chat:stream', { path, ...body })
+        .invoke('chat:stream', { streamId: sid, path, ...body })
         .finally(() => {
           ipcRenderer.removeListener('chat:delta', deltaListener)
           ipcRenderer.removeListener('chat:thought', thoughtListener)
           ipcRenderer.removeListener('chat:status', statusListener)
         })
     },
+    // 中断在途流：按 streamId 精确中断，或按 conversationId / personaId 级联中断。
+    // 幂等：无匹配返回 { aborted: 0 }，重复调用安全
+    stop: (q: {
+      streamId?: string
+      conversationId?: string
+      personaId?: string
+    }): Promise<{ aborted: number }> => ipcRenderer.invoke('chat:abort', q),
   },
 }
 

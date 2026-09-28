@@ -35,6 +35,9 @@ export default function ChatPane({ personaId, personaName }: ChatPaneProps) {
   const [error, setError] = useState('')
   const scrollRef = useRef<HTMLDivElement>(null)
   const taRef = useRef<HTMLTextAreaElement>(null)
+  // 在途流凭据：中断按钮据此调用 stop；stopRequested 区分「主动中断」与「真实报错」
+  const streamIdRef = useRef('')
+  const stopRequestedRef = useRef(false)
 
   useEffect(() => {
     let cancelled = false
@@ -86,14 +89,20 @@ export default function ChatPane({ personaId, personaName }: ChatPaneProps) {
     setError('')
     setInput('')
     if (taRef.current) taRef.current.style.height = 'auto'
+    // 记录发送前的消息数：中断时据此回滚到上一轮结束的状态
+    const prevCount = messages.length
     setMessages((prev) => [
       ...prev,
       { role: 'user', content },
       { role: 'assistant', content: '', thought: '' },
     ])
     setStreaming(true)
+    const sid = crypto.randomUUID()
+    streamIdRef.current = sid
+    stopRequestedRef.current = false
+    let cid = ''
     try {
-      const cid = await ensureConversation()
+      cid = await ensureConversation()
       const append = (field: 'content' | 'thought', delta: string) => {
         setMessages((prev) => {
           const next = [...prev]
@@ -106,21 +115,41 @@ export default function ChatPane({ personaId, personaName }: ChatPaneProps) {
       }
       await window.appApi.chat.stream(
         '/api/chat/stream',
-        { conversation_id: cid, content },
+        { conversation_id: cid, persona_id: personaId, content },
         (delta) => append('content', delta),
         (thought) => append('thought', thought),
+        undefined,
+        sid,
       )
     } catch (e) {
-      setError(e instanceof Error ? e.message : '生成失败')
-      setMessages((prev) => {
-        const last = prev[prev.length - 1]
-        if (last && last.role === 'assistant' && !last.content && !last.thought)
-          return prev.slice(0, -1)
-        return prev
-      })
+      if (stopRequestedRef.current) {
+        // 主动中断：丢弃本轮未完成内容并回滚服务端已落库的消息
+        setMessages((prev) => prev.slice(0, prevCount))
+        if (cid) {
+          void window.appApi
+            .request('/api/chat/rollback', 'POST', { conversation_id: cid, keep: prevCount })
+            .catch(() => {})
+        }
+      } else {
+        setError(e instanceof Error ? e.message : '生成失败')
+        setMessages((prev) => {
+          const last = prev[prev.length - 1]
+          if (last && last.role === 'assistant' && !last.content && !last.thought)
+            return prev.slice(0, -1)
+          return prev
+        })
+      }
     } finally {
       setStreaming(false)
+      streamIdRef.current = ''
     }
+  }
+
+  /** 中断当前生成：后台请求一并取消；重复点击幂等（流结束后凭据已清空） */
+  const stopStream = () => {
+    if (!streaming || !streamIdRef.current) return
+    stopRequestedRef.current = true
+    void window.appApi.chat.stop({ streamId: streamIdRef.current })
   }
 
   useEffect(() => {
@@ -199,15 +228,29 @@ export default function ChatPane({ personaId, personaName }: ChatPaneProps) {
               }
             }}
           />
-          <button
-            type="button"
-            className="chat-send"
-            disabled={!input.trim() || streaming}
-            onClick={() => void send()}
-            aria-label="发送"
-          >
-            ↑
-          </button>
+          {streaming ? (
+            <button
+              type="button"
+              className="chat-send stop"
+              onClick={stopStream}
+              aria-label="停止生成"
+              title="停止生成"
+            >
+              <svg width="11" height="11" viewBox="0 0 11 11">
+                <rect x="1.5" y="1.5" width="8" height="8" rx="2" fill="currentColor" />
+              </svg>
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="chat-send"
+              disabled={!input.trim()}
+              onClick={() => void send()}
+              aria-label="发送"
+            >
+              ↑
+            </button>
+          )}
         </div>
       </div>
     </div>

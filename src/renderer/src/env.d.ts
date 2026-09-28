@@ -45,7 +45,14 @@ declare global {
           onDelta: (text: string) => void,
           onThought?: (text: string) => void,
           onStatus?: (text: string) => void,
+          /** 由渲染层生成的流ID：并发认领 + 中断凭据 */
+          streamId?: string,
         ) => Promise<{ ok: boolean }>
+        stop: (q: {
+          streamId?: string
+          conversationId?: string
+          personaId?: string
+        }) => Promise<{ aborted: number }>
       }
     }
   }

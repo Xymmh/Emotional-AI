@@ -111,6 +111,34 @@ def get_conversation(conversation_id: str) -> Conversation | None:
         return session.get(Conversation, conversation_id)
 
 
+def get_conversation_by_persona_mode(persona_id: str, mode: str) -> Conversation | None:
+    with Session(get_engine()) as session:
+        stmt = select(Conversation).where(
+            Conversation.persona_id == persona_id,
+            Conversation.mode == mode,
+        )
+        return session.exec(stmt).first()
+
+
+def rollback_messages(conversation_id: str, keep: int) -> int:
+    """回退到第 keep 条消息之后：删除其后所有消息，返回删除条数。
+
+    供「中断生成」使用：客户端传入发送前的消息数，服务端把本轮
+    用户消息与未完成的助手回复一并删除，恢复到上一轮结束的状态。
+    """
+    with Session(get_engine()) as session:
+        rows = session.exec(
+            select(Message)
+            .where(Message.conversation_id == conversation_id)
+            .order_by(Message.created_at, Message.id)
+        ).all()
+        stale = rows[max(0, keep):]
+        for m in stale:
+            session.delete(m)
+        session.commit()
+        return len(stale)
+
+
 def touch_conversation(conversation_id: str) -> None:
     """更新会话时间戳，供追加消息后调用。"""
     with Session(get_engine()) as session:

@@ -164,3 +164,29 @@ async def chat_stream(body: ChatStreamRequest):
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+class RollbackRequest(BaseModel):
+    """中断生成后的回滚参数。按 conversation_id 定位会话；
+    分析师面板的会话由服务端创建、客户端拿不到ID，故也支持 persona_id + mode。"""
+
+    conversation_id: str | None = None
+    persona_id: str | None = None
+    mode: str | None = None
+    keep: int
+
+
+@router.post("/rollback", dependencies=[Depends(require_sidecar_token)])
+async def chat_rollback(body: RollbackRequest):
+    conv = None
+    if body.conversation_id:
+        conv = await asyncio.to_thread(crud.get_conversation, body.conversation_id)
+    elif body.persona_id and body.mode:
+        conv = await asyncio.to_thread(
+            crud.get_conversation_by_persona_mode, body.persona_id, body.mode
+        )
+    if conv is None:
+        # 会话尚不存在说明本轮未落库任何内容，无需回滚
+        return {"removed": 0}
+    removed = await asyncio.to_thread(crud.rollback_messages, conv.id, body.keep)
+    return {"removed": removed}

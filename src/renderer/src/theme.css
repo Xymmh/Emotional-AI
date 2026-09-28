@@ -786,6 +786,11 @@ body {
   transition: opacity 0.12s ease;
 }
 
+/* 停止生成：悬停变红提示「中断」语义 */
+.chat-send.stop:hover {
+  background: #d03050;
+}
+
 .chat-send:disabled {
   opacity: 0.25;
   cursor: default;
@@ -1091,4 +1096,156 @@ body {
   font-size: 11px;
   letter-spacing: 0.5px;
   color: var(--text-faint);
+}
+
+/* ---- 侧栏对话项：hover 显示删除按钮 ---- */
+
+.conv-item-wrap {
+  position: relative;
+}
+
+/* 预留删除按钮空间，避免长摘要文字压到图标下方 */
+.conv-item {
+  padding-right: 34px;
+}
+
+.conv-del-btn {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 22px;
+  height: 22px;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-faint);
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.conv-item-wrap:hover .conv-del-btn {
+  display: flex;
+}
+
+.conv-del-btn:hover {
+  background: rgba(208, 48, 80, 0.1);
+  color: #d03050;
+}
+
+/* ---- 通用弹窗 ---- */
+
+.app-modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(16, 16, 22, 0.42);
+  backdrop-filter: blur(3px);
+  -webkit-app-region: no-drag;
+  animation: modal-fade 0.16s ease;
+}
+
+.app-modal {
+  width: 400px;
+  max-width: calc(100vw - 48px);
+  padding: 20px 22px 18px;
+  border-radius: 12px;
+  background: #ffffff;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.2), 0 2px 8px rgba(0, 0, 0, 0.08);
+  animation: modal-pop 0.2s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@keyframes modal-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes modal-pop {
+  from { opacity: 0; transform: scale(0.95) translateY(8px); }
+  to { opacity: 1; transform: scale(1) translateY(0); }
+}
+
+.app-modal-title {
+  font-size: 14.5px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.app-modal-desc {
+  margin-top: 10px;
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--text-dim);
+}
+
+.app-modal-desc b {
+  color: #b02a45;
+  font-weight: 600;
+}
+
+.app-modal-input {
+  width: 100%;
+  margin-top: 12px;
+}
+
+.app-modal-error {
+  margin-top: 10px;
+  font-size: 12px;
+  color: #b02a45;
+}
+
+.app-modal-footer {
+  margin-top: 22px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.app-modal-btn {
+  height: 32px;
+  padding: 0 18px;
+  font-size: 13px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  transition: background 0.12s ease, opacity 0.12s ease;
+}
+
+.app-modal-btn:hover:not(:disabled) {
+  background: var(--bg-hover);
+}
+
+.app-modal-btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.app-modal-btn.primary {
+  background: #1a1a1f;
+  border-color: #1a1a1f;
+  color: #ffffff;
+}
+
+.app-modal-btn.primary:hover:not(:disabled) {
+  background: #1a1a1f;
+  opacity: 0.85;
+}
+
+.app-modal-btn.primary.danger {
+  background: #d03050;
+  border-color: #d03050;
+}
+
+.app-modal-btn.primary.danger:hover:not(:disabled) {
+  background: #d03050;
+  opacity: 0.88;
 }

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Input, Modal } from '@arco-design/web-react'
 import { IconPlus, IconSettings } from '@arco-design/web-react/icon'
+import AppModal from './components/AppModal'
 import Workspace from './pages/Workspace'
 import SettingsPage from './pages/Settings'
 
@@ -23,6 +23,10 @@ export default function App() {
   const [modalOpen, setModalOpen] = useState(false)
   const [newName, setNewName] = useState('')
   const [creating, setCreating] = useState(false)
+  const [createError, setCreateError] = useState('')
+  const [deleteTarget, setDeleteTarget] = useState<PersonaLite | null>(null)
+  const [deleting, setDeleting] = useState(false)
+  const [deleteError, setDeleteError] = useState('')
 
   const refresh = useCallback(async () => {
     try {
@@ -47,6 +51,7 @@ export default function App() {
     const name = newName.trim()
     if (!name || creating) return
     setCreating(true)
+    setCreateError('')
     try {
       const p = await window.appApi.request<PersonaLite>('/api/personas', 'POST', {
         name,
@@ -59,11 +64,32 @@ export default function App() {
       await refresh()
       openPersona(p.id)
     } catch (e) {
-      setNewName('')
-      setModalOpen(false)
-      window.alert(e instanceof Error ? e.message : '创建失败')
+      setCreateError(e instanceof Error ? e.message : '创建失败，请重试')
     } finally {
       setCreating(false)
+    }
+  }
+
+  const handleDelete = async () => {
+    if (!deleteTarget || deleting) return
+    setDeleting(true)
+    setDeleteError('')
+    try {
+      // 先级联中断该人格下所有在途生成，再删数据：避免流结束时往已删除的会话写消息
+      await window.appApi.chat.stop({ personaId: deleteTarget.id })
+      await window.appApi.request(
+        `/api/personas/${deleteTarget.id}`,
+        'DELETE',
+      )
+      // 先摘掉挂载视图再清选中态，避免残留一个空 workspace
+      setMountedIds((prev) => prev.filter((id) => id !== deleteTarget.id))
+      if (selectedId === deleteTarget.id) setSelectedId('')
+      setDeleteTarget(null)
+      await refresh()
+    } catch (e) {
+      setDeleteError(e instanceof Error ? e.message : '删除失败，请重试')
+    } finally {
+      setDeleting(false)
     }
   }
 
@@ -105,22 +131,45 @@ export default function App() {
               <div className="conv-empty">还没有对话。点上方「新建对话」开始。</div>
             )}
             {personas.map((p) => (
-              <button
-                key={p.id}
-                type="button"
-                title={collapsed ? p.name : undefined}
-                className={`conv-item${selectedId === p.id && view === 'workspace' ? ' active' : ''}`}
-                onClick={() => openPersona(p.id)}
-              >
-                {collapsed ? (
-                  <span className="conv-avatar">{p.name.charAt(0)}</span>
-                ) : (
-                  <>
-                    <span className="conv-name">{p.name}</span>
-                    <span className="conv-sub">{p.summary || '画像待塑造'}</span>
-                  </>
+              <div key={p.id} className="conv-item-wrap">
+                <button
+                  type="button"
+                  title={collapsed ? p.name : undefined}
+                  className={`conv-item${selectedId === p.id && view === 'workspace' ? ' active' : ''}`}
+                  onClick={() => openPersona(p.id)}
+                >
+                  {collapsed ? (
+                    <span className="conv-avatar">{p.name.charAt(0)}</span>
+                  ) : (
+                    <>
+                      <span className="conv-name">{p.name}</span>
+                      <span className="conv-sub">{p.summary || '画像待塑造'}</span>
+                    </>
+                  )}
+                </button>
+                {!collapsed && (
+                  <button
+                    type="button"
+                    className="conv-del-btn"
+                    title="删除对话"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      setDeleteError('')
+                      setDeleteTarget(p)
+                    }}
+                  >
+                    <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.2">
+                      <path d="M1.5 3h9" strokeLinecap="round" />
+                      <path d="M4.5 3V1.8a.8.8 0 0 1 .8-.8h1.4a.8.8 0 0 1 .8.8V3" />
+                      <path
+                        d="M2.8 3l.5 7a1 1 0 0 0 1 .9h3.4a1 1 0 0 0 1-.9l.5-7"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      />
+                    </svg>
+                  </button>
                 )}
-              </button>
+              </div>
             ))}
           </div>
 
@@ -205,29 +254,44 @@ export default function App() {
           )}
         </main>
 
-      <Modal
-        title="新建对话"
+      <AppModal
         visible={modalOpen}
-        confirmLoading={creating}
+        title="新建对话"
+        okText="创建"
+        loading={creating}
+        loadingText="创建中…"
         onOk={() => void createConversation()}
         onCancel={() => setModalOpen(false)}
-        okText="创建"
-        cancelText="取消"
-        autoFocus={false}
-        escToExit
       >
-        <div style={{ paddingTop: 8 }}>
-          <div style={{ marginBottom: 10, color: 'var(--text-dim)', fontSize: 13 }}>
-            给「对方」起个名字（之后可以随时补充 TA 的资料）
-          </div>
-          <Input
-            placeholder="例如：小林"
-            value={newName}
-            onChange={setNewName}
-            onPressEnter={() => void createConversation()}
-          />
+        <div className="app-modal-desc">
+          给「对方」起个名字（之后可以随时补充 TA 的资料）
         </div>
-      </Modal>
+        <input
+          className="set-input app-modal-input"
+          placeholder="例如：小林"
+          value={newName}
+          autoFocus
+          onChange={(e) => setNewName(e.target.value)}
+        />
+        {createError && <div className="app-modal-error">{createError}</div>}
+      </AppModal>
+
+      <AppModal
+        visible={deleteTarget !== null}
+        title="删除对话"
+        okText="删除"
+        danger
+        loading={deleting}
+        loadingText="删除中…"
+        onOk={() => void handleDelete()}
+        onCancel={() => setDeleteTarget(null)}
+      >
+        <div className="app-modal-desc">
+          将删除「{deleteTarget?.name}」及其全部聊天记录、导入数据与画像记忆，
+          <b>此操作不可恢复</b>。确定要删除吗？
+        </div>
+        {deleteError && <div className="app-modal-error">{deleteError}</div>}
+      </AppModal>
     </div>
   )
 }

@@ -1,6 +1,6 @@
 {
   "name": "emotional-ai",
-  "version": "0.1.0",
+  "version": "1.0.1",
   "description": "Emotional AI - 本地 AI 人格分析与对话预演桌面应用",
   "main": "./out/main/index.js",
   "author": "Xymmh",

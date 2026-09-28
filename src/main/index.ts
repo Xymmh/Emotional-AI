@@ -91,105 +91,170 @@ ipcMain.handle('sidecar:request', (_event, path: string, method?: string, body?:
 
 // ---- IPC：流式对话。主进程拉 SSE 并逐块转发渲染进程，令牌不出主进程 ----
 
+// 在途流注册表：streamId → 中断控制器 + 会话/人格定位。
+// chat:abort 按 streamId 精确中断，删除对话时按 personaId 级联中断。
+const activeStreams = new Map<
+  string,
+  { controller: AbortController; conversationId?: string; personaId?: string }
+>()
+
 ipcMain.handle(
   'chat:stream',
-  async (_event, payload: { path?: string; content: string; conversation_id?: string; persona_id?: string }) => {
+  async (_event, payload: { streamId?: string; path?: string; content: string; conversation_id?: string; persona_id?: string }) => {
     if (!sidecar) throw new Error('本地服务未启动')
-    const { path = '/api/chat/stream', ...body } = payload
-    const resp = await fetch(`${sidecar.url}${path}`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Sidecar-Token': sidecar.token,
-      },
-      body: JSON.stringify(body),
-    })
-  if (!resp.ok) {
-    const data = (await resp.json().catch(() => null)) as { detail?: string } | null
-    throw new Error(data?.detail ?? `本地服务请求失败（HTTP ${resp.status}）`)
-  }
-  if (!resp.body) throw new Error('本地服务未返回流')
+    const { path = '/api/chat/stream', streamId = '', ...body } = payload
+    const controller = new AbortController()
+    if (streamId) {
+      activeStreams.set(streamId, {
+        controller,
+        conversationId: payload.conversation_id,
+        personaId: payload.persona_id,
+      })
+    }
+    let reader: ReadableStreamDefaultReader<Uint8Array> | null = null
+    try {
+      const resp = await fetch(`${sidecar.url}${path}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Sidecar-Token': sidecar.token,
+        },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      })
+      if (!resp.ok) {
+        const data = (await resp.json().catch(() => null)) as { detail?: string } | null
+        throw new Error(data?.detail ?? `本地服务请求失败（HTTP ${resp.status}）`)
+      }
+      if (!resp.body) throw new Error('本地服务未返回流')
 
-  const reader = resp.body.getReader()
-  const decoder = new TextDecoder()
-  let sseBuf = ''
-  let errorText: string | null = null
+      reader = resp.body.getReader()
+      const decoder = new TextDecoder()
+      let sseBuf = ''
+      let errorText: string | null = null
 
-  const emit = (text: string) => mainWindow?.webContents.send('chat:delta', text)
-  const emitThought = (text: string) => mainWindow?.webContents.send('chat:thought', text)
-  const emitStatus = (text: string) => mainWindow?.webContents.send('chat:status', text)
+      // 事件均携带 streamId：并发多路流时由 preload 按ID认领，避免互相串扰
+      const emit = (text: string) => mainWindow?.webContents.send('chat:delta', streamId, text)
+      const emitThought = (text: string) => mainWindow?.webContents.send('chat:thought', streamId, text)
+      const emitStatus = (text: string) => mainWindow?.webContents.send('chat:status', streamId, text)
 
-  // <thought> 标签分流状态机：正文 → chat:delta，心路历程 → chat:thought。
-  // 处理标签被网络分块截断的情况：结尾若是标签前缀则暂存，下一块再判断。
-  const OPEN = '<thought>'
-  const CLOSE = '</thought>'
-  let mode: 'text' | 'thought' = 'text'
-  let pending = ''
-  const splitThought = (chunk: string) => {
-    pending += chunk
-    for (;;) {
-      if (mode === 'text') {
-        const i = pending.indexOf(OPEN)
-        if (i === -1) {
-          // 结尾保留可能是标签前缀的部分
-          const keep = longestTagSuffix(pending, OPEN)
-          const out = pending.slice(0, pending.length - keep)
-          pending = pending.slice(pending.length - keep)
-          if (out) emit(out)
-          return
+      // <thought> 标签分流状态机：正文 → chat:delta，心路历程 → chat:thought。
+      // 处理标签被网络分块截断的情况：结尾若是标签前缀则暂存，下一块再判断。
+      // 模式切换后剥掉紧随标签的空白（模型习惯在 <thought> 后输出换行），
+      // 否则心路历程开头会多出一行空行。
+      const OPEN = '<thought>'
+      const CLOSE = '</thought>'
+      let mode: 'text' | 'thought' = 'text'
+      let pending = ''
+      let leadPending = true
+      const stripLead = (s: string): string => {
+        if (!leadPending) return s
+        const stripped = s.replace(/^\s+/, '')
+        if (stripped) leadPending = false
+        return stripped
+      }
+      const splitThought = (chunk: string) => {
+        pending += chunk
+        for (;;) {
+          if (mode === 'text') {
+            const i = pending.indexOf(OPEN)
+            if (i === -1) {
+              // 结尾保留可能是标签前缀的部分
+              const keep = longestTagSuffix(pending, OPEN)
+              const out = stripLead(pending.slice(0, pending.length - keep))
+              pending = pending.slice(pending.length - keep)
+              if (out) emit(out)
+              return
+            }
+            if (i > 0) {
+              const out = stripLead(pending.slice(0, i))
+              if (out) emit(out)
+            }
+            pending = pending.slice(i + OPEN.length)
+            mode = 'thought'
+            leadPending = true
+          } else {
+            const i = pending.indexOf(CLOSE)
+            if (i === -1) {
+              const keep = longestTagSuffix(pending, CLOSE)
+              const out = stripLead(pending.slice(0, pending.length - keep))
+              pending = pending.slice(pending.length - keep)
+              if (out) emitThought(out)
+              return
+            }
+            if (i > 0) {
+              const out = stripLead(pending.slice(0, i))
+              if (out) emitThought(out)
+            }
+            pending = pending.slice(i + CLOSE.length)
+            mode = 'text'
+            leadPending = true
+          }
         }
-        if (i > 0) emit(pending.slice(0, i))
-        pending = pending.slice(i + OPEN.length)
-        mode = 'thought'
-      } else {
-        const i = pending.indexOf(CLOSE)
-        if (i === -1) {
-          const keep = longestTagSuffix(pending, CLOSE)
-          const out = pending.slice(0, pending.length - keep)
-          pending = pending.slice(pending.length - keep)
-          if (out) emitThought(out)
-          return
+      }
+      const longestTagSuffix = (s: string, tag: string): number => {
+        for (let n = Math.min(tag.length - 1, s.length); n > 0; n--) {
+          if (s.endsWith(tag.slice(0, n))) return n
         }
-        if (i > 0) emitThought(pending.slice(0, i))
-        pending = pending.slice(i + CLOSE.length)
-        mode = 'text'
+        return 0
+      }
+
+      for (;;) {
+        const { done, value } = await reader.read()
+        if (done) break
+        sseBuf += decoder.decode(value, { stream: true })
+        const frames = sseBuf.split('\n\n')
+        sseBuf = frames.pop() ?? ''
+        for (const frame of frames) {
+          const line = frame.split('\n').find((l) => l.startsWith('data: '))
+          if (!line) continue
+          try {
+            const evt = JSON.parse(line.slice(6)) as { type: string; text?: string }
+            if (evt.type === 'delta' && evt.text) splitThought(evt.text)
+            else if (evt.type === 'status' && evt.text) emitStatus(evt.text)
+            else if (evt.type === 'error') errorText = evt.text ?? '生成失败'
+          } catch {
+            // 忽略不完整帧
+          }
+        }
+      }
+      // 收尾：把滞留的 pending 冲出去
+      {
+        const out = stripLead(pending)
+        if (out) {
+          if ((mode as 'text' | 'thought') === 'thought') emitThought(out)
+          else emit(out)
+        }
+      }
+      if (errorText) throw new Error(errorText)
+      return { ok: true }
+    } finally {
+      if (streamId) activeStreams.delete(streamId)
+      // 取消 reader 以尽快断开与服务端的连接（服务端随之取消生成任务）
+      void reader?.cancel().catch(() => {})
+    }
+  },
+)
+
+// 中断在途流。幂等：无匹配时直接返回 { aborted: 0 }，重复调用无副作用
+ipcMain.handle(
+  'chat:abort',
+  (_event, q: { streamId?: string; conversationId?: string; personaId?: string }) => {
+    let aborted = 0
+    for (const [sid, s] of activeStreams) {
+      const match =
+        (q.streamId !== undefined && sid === q.streamId) ||
+        (q.conversationId !== undefined && s.conversationId === q.conversationId) ||
+        (q.personaId !== undefined && s.personaId === q.personaId)
+      if (match) {
+        s.controller.abort()
+        activeStreams.delete(sid)
+        aborted += 1
       }
     }
-  }
-  const longestTagSuffix = (s: string, tag: string): number => {
-    for (let n = Math.min(tag.length - 1, s.length); n > 0; n--) {
-      if (s.endsWith(tag.slice(0, n))) return n
-    }
-    return 0
-  }
-
-  for (;;) {
-    const { done, value } = await reader.read()
-    if (done) break
-    sseBuf += decoder.decode(value, { stream: true })
-    const frames = sseBuf.split('\n\n')
-    sseBuf = frames.pop() ?? ''
-    for (const frame of frames) {
-      const line = frame.split('\n').find((l) => l.startsWith('data: '))
-      if (!line) continue
-      try {
-        const evt = JSON.parse(line.slice(6)) as { type: string; text?: string }
-        if (evt.type === 'delta' && evt.text) splitThought(evt.text)
-        else if (evt.type === 'status' && evt.text) emitStatus(evt.text)
-        else if (evt.type === 'error') errorText = evt.text ?? '生成失败'
-      } catch {
-        // 忽略不完整帧
-      }
-    }
-  }
-  // 收尾：把滞留的 pending 冲出去
-  if (pending) {
-    if ((mode as 'text' | 'thought') === 'thought') emitThought(pending)
-    else emit(pending)
-  }
-  if (errorText) throw new Error(errorText)
-  return { ok: true }
-})
+    return { aborted }
+  },
+)
 
 // ---- IPC：窗口控制（无边框窗口的自定义标题栏按钮） ----
 

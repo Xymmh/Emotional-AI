@@ -180,7 +180,7 @@ export default function SettingsPage({ visible }: SettingsPageProps) {
           <div className="set-footer-line">
             © 2026 Nanyang Technological University · WANG QIALUN
           </div>
-          <div className="set-footer-line">V1.0.0</div>
+          <div className="set-footer-line">V1.0.1</div>
         </footer>
       </div>
     </div>
