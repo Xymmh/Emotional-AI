@@ -1,0 +1,25 @@
+# 依赖与构建产物
+node_modules/
+out/
+dist/
+*.tsbuildinfo
+
+# Python
+server/.venv/
+__pycache__/
+*.pyc
+
+# 密钥与本地配置（绝不入库）
+server/.env
+.env
+.env.local
+
+# 本地数据
+data/
+*.lance/
+
+# IDE / 系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

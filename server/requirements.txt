@@ -1,0 +1,8 @@
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+pydantic-settings==2.7.1
+httpx==0.28.1
+volcengine-python-sdk[ark]==1.0.129
+lancedb==0.39.0
+sqlmodel==0.0.22
+pydantic[email]==2.10.4

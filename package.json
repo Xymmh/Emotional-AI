@@ -1,0 +1,33 @@
+{
+  "name": "emotional-ai",
+  "version": "0.1.0",
+  "description": "Emotional AI - 本地 AI 人格分析与对话预演桌面应用",
+  "main": "./out/main/index.js",
+  "author": "Xymmh",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "dev:server": "server\\.venv\\Scripts\\python.exe -m uvicorn app.main:app --reload --port 8765 --app-dir server",
+    "build": "electron-vite build",
+    "start": "electron-vite preview",
+    "typecheck:node": "tsc --noEmit -p tsconfig.node.json",
+    "typecheck:web": "tsc --noEmit -p tsconfig.web.json"
+  },
+  "dependencies": {
+    "@arco-design/web-react": "^2.66.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "zustand": "^5.0.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "electron": "^34.0.0",
+    "electron-vite": "^3.1.0",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.3"
+  }
+}
