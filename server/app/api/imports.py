@@ -38,28 +38,18 @@ class ImportResult(BaseModel):
 )
 async def import_chat(body: ImportChatRequest) -> ImportResult:
     raw = body.raw_text.strip()
+    my_name = body.my_name.strip()
+    their_name = body.their_name.strip()
     if not raw:
         raise HTTPException(status_code=400, detail="raw_text 不能为空")
-    if body.my_name.strip() == body.their_name.strip():
+    if not my_name or not their_name:
+        raise HTTPException(status_code=400, detail="my_name 与 their_name 不能为空")
+    if my_name == their_name:
         raise HTTPException(status_code=400, detail="my_name 与 their_name 不能相同")
 
-    # 人格：复用或新建
-    persona_id = body.persona_id
-    if persona_id:
-        persona = await asyncio.to_thread(crud.get_persona, persona_id)
-        if persona is None:
-            raise HTTPException(status_code=404, detail="指定的人格不存在")
-        created_new = False
-    else:
-        persona = await asyncio.to_thread(
-            crud.create_persona,
-            PersonaCreate(name=body.their_name, summary="（待分析师生成）"),
-        )
-        persona_id = persona.id
-        created_new = True
-
-    # 解析
-    msgs = parse_chat(raw, body.my_name, body.their_name)
+    # 先做所有校验与上游调用，全部成功后才落库：
+    # 否则解析失败 / 没配 Key / 嵌入失败时会留下孤儿人格与导入记录
+    msgs = parse_chat(raw, my_name, their_name)
     if not msgs:
         raise HTTPException(
             status_code=400,
@@ -69,37 +59,52 @@ async def import_chat(body: ImportChatRequest) -> ImportResult:
         [{"speaker": m.speaker, "text": m.text} for m in msgs], ensure_ascii=False
     )
 
-    # 持久化导入记录
-    rec = await asyncio.to_thread(
-        crud.create_import_record,
-        persona_id, body.my_name, body.their_name, raw, parsed_json, len(msgs),
-    )
-    if created_new:
-        await asyncio.to_thread(crud.update_persona_source, persona_id, rec.id)
+    if body.persona_id:
+        persona = await asyncio.to_thread(crud.get_persona, body.persona_id)
+        if persona is None:
+            raise HTTPException(status_code=404, detail="指定的人格不存在")
 
-    # 嵌入对方消息 → 向量库
     texts = them_texts(msgs)
-    embedded = 0
+    vecs: list[list[float]] = []
     if texts:
-        api_key = state.api_key
-        if not api_key:
+        if not state.api_key:
             raise HTTPException(status_code=400, detail="未配置 API Key，无法生成嵌入")
         try:
-            vecs = await ark.embed_texts(api_key, texts)
+            vecs = await ark.embed_texts(state.api_key, texts)
         except Exception as exc:  # noqa: BLE001 - 把上游失败转成 502 给前端
             raise HTTPException(
                 status_code=502,
                 detail=f"嵌入调用失败：{type(exc).__name__}: {exc}",
             ) from exc
-        store = get_vector_store()
-        await store.upsert(persona_id, list(zip(texts, vecs)))
-        embedded = len(vecs)
+
+    # 人格：复用或新建
+    if body.persona_id:
+        persona_id = body.persona_id
+        created_new = False
+    else:
+        persona = await asyncio.to_thread(
+            crud.create_persona, PersonaCreate(name=their_name, summary="")
+        )
+        persona_id = persona.id
+        created_new = True
+
+    rec = await asyncio.to_thread(
+        crud.create_import_record,
+        persona_id, my_name, their_name, raw, parsed_json, len(msgs),
+    )
+    if created_new:
+        await asyncio.to_thread(crud.update_persona_source, persona_id, rec.id)
+
+    # 追加而不是整体替换：已有人格的分析师洞察与历次记录不能被一次导入清空
+    embedded = 0
+    if vecs:
+        embedded = await get_vector_store().append(persona_id, list(zip(texts, vecs)))
 
     return ImportResult(
         persona_id=persona_id,
         import_id=rec.id,
-        my_name=body.my_name,
-        their_name=body.their_name,
+        my_name=my_name,
+        their_name=their_name,
         parsed=[{"speaker": m.speaker, "text": m.text} for m in msgs],
         message_count=len(msgs),
         them_count=len(texts),

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { SettingsStatus, VerifyResult } from '../env'
+import { errorText } from '../lib/util'
 
 interface SettingsPageProps {
   /** 当前页是否可见；切走时自动保存未提交的修改 */
@@ -13,6 +14,8 @@ export default function SettingsPage({ visible }: SettingsPageProps) {
   const [roleplayModel, setRoleplayModel] = useState('')
   const [verifying, setVerifying] = useState(false)
   const [verifyResult, setVerifyResult] = useState<VerifyResult | null>(null)
+  const [saving, setSaving] = useState(false)
+  const [saveTip, setSaveTip] = useState<{ ok: boolean; text: string } | null>(null)
 
   const refresh = async () => {
     setLoading(true)
@@ -20,8 +23,44 @@ export default function SettingsPage({ visible }: SettingsPageProps) {
       const next = await window.appApi.settings.get()
       setStatus(next)
       if (next.roleplay_model) setRoleplayModel(next.roleplay_model)
+    } catch (e) {
+      setStatus({
+        has_key: false,
+        key_hint: '',
+        key_length: 0,
+        roleplay_model: '',
+        models: null,
+        sidecar_offline: true,
+      })
+      setSaveTip({ ok: false, text: errorText(e, '读取设置失败') })
     } finally {
       setLoading(false)
+    }
+  }
+
+  const keyChanged = apiKey.trim().length > 0
+  const modelChanged = !!status && !!roleplayModel && roleplayModel !== status.roleplay_model
+  const dirty = keyChanged || modelChanged
+
+  const save = async (silent = false): Promise<boolean> => {
+    if (!status || !dirty) return true
+    setSaving(true)
+    if (!silent) setSaveTip(null)
+    try {
+      const next = await window.appApi.settings.save({
+        apiKey: keyChanged ? apiKey.trim() : undefined,
+        roleplayModel: modelChanged ? roleplayModel : undefined,
+      })
+      setStatus(next)
+      setApiKey('')
+      if (next.roleplay_model) setRoleplayModel(next.roleplay_model)
+      if (!silent) setSaveTip({ ok: true, text: '已保存，立即生效' })
+      return true
+    } catch (e) {
+      if (!silent) setSaveTip({ ok: false, text: errorText(e, '保存失败') })
+      return false
+    } finally {
+      setSaving(false)
     }
   }
 
@@ -29,26 +68,16 @@ export default function SettingsPage({ visible }: SettingsPageProps) {
     void refresh()
   }, [])
 
-  // 离开设置页时自动保存：Key 输入框有值、或模型切换过，才需要提交
+  // 离开设置页时兜底自动保存（有未保存修改才提交）；回到设置页时重新读取实际状态
   useEffect(() => {
-    if (visible) return
-    if (!status || status.sidecar_offline) return
-    const keyChanged = apiKey.trim().length > 0
-    const modelChanged = roleplayModel !== status.roleplay_model
-    if (!keyChanged && !modelChanged) return
-    void (async () => {
-      try {
-        const next = await window.appApi.settings.save({
-          apiKey: apiKey.trim() || undefined,
-          roleplayModel: modelChanged ? roleplayModel : undefined,
-        })
-        setStatus(next)
-        setApiKey('')
-      } catch {
-        // 自动保存失败不打扰用户；回到设置页时看到的是服务端实际值
-      }
-    })()
-    // 仅在「可见→不可见」这一跳触发；依赖里的 state 都取当次渲染最新值
+    if (visible) {
+      if (status) void refresh()
+      return
+    }
+    setSaveTip(null)
+    setVerifyResult(null)
+    if (dirty && status && !status.sidecar_offline) void save(true)
+    // 仅在可见性翻转时触发；依赖里的 state 都取当次渲染最新值
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible])
 
@@ -57,10 +86,10 @@ export default function SettingsPage({ visible }: SettingsPageProps) {
     setVerifyResult(null)
     try {
       // 输入框有值就测试刚输入的（不落盘），为空则测试已保存的 Key
-      const result = await window.appApi.settings.verify(apiKey || undefined)
+      const result = await window.appApi.settings.verify(apiKey.trim() || undefined)
       setVerifyResult(result)
     } catch (error) {
-      setVerifyResult({ ok: false, message: String(error) })
+      setVerifyResult({ ok: false, message: errorText(error, '测试失败') })
     } finally {
       setVerifying(false)
     }
@@ -99,6 +128,9 @@ export default function SettingsPage({ visible }: SettingsPageProps) {
         {status.sidecar_offline && (
           <div className="settings-warn">
             本地服务未运行，当前显示的是已保存配置；启动后端后可测试连接与保存。
+            <button type="button" className="set-secondary-btn" onClick={() => void refresh()}>
+              重新连接
+            </button>
           </div>
         )}
 
@@ -116,7 +148,11 @@ export default function SettingsPage({ visible }: SettingsPageProps) {
                 type="password"
                 className={`set-input${status.has_key && !apiKey ? ' masked' : ''}`}
                 value={apiKey}
-                onChange={(e) => setApiKey(e.target.value)}
+                onChange={(e) => {
+                  setApiKey(e.target.value)
+                  setVerifyResult(null)
+                  setSaveTip(null)
+                }}
                 placeholder={
                   status.has_key
                     ? '●'.repeat(status.key_length || 24)
@@ -132,7 +168,11 @@ export default function SettingsPage({ visible }: SettingsPageProps) {
                 {verifying ? '测试中…' : '测试连接'}
               </button>
             </div>
-            {!status.has_key && <div className="set-hint">未配置</div>}
+            <div className="set-hint">
+              {status.has_key
+                ? `已保存（${status.key_hint}）。输入新 Key 可替换；Key 经系统加密保存在本机。`
+                : '未配置。到火山方舟控制台创建 API Key 后粘贴到这里。'}
+            </div>
             {verifyResult && (
               <div className={`set-verify${verifyResult.ok ? ' ok' : ' bad'}`}>
                 {verifyResult.ok ? '✓ ' : '✕ '}
@@ -155,7 +195,10 @@ export default function SettingsPage({ visible }: SettingsPageProps) {
                   key={m.id}
                   type="button"
                   className={`set-model-opt${roleplayModel === m.id ? ' selected' : ''}`}
-                  onClick={() => setRoleplayModel(m.id)}
+                  onClick={() => {
+                    setRoleplayModel(m.id)
+                    setSaveTip(null)
+                  }}
                 >
                   <span
                     className={`set-model-radio${roleplayModel === m.id ? ' on' : ''}`}
@@ -175,12 +218,27 @@ export default function SettingsPage({ visible }: SettingsPageProps) {
           )}
         </section>
 
+        <div className="set-save-row">
+          <button
+            type="button"
+            className="set-primary-btn"
+            disabled={!dirty || saving || status.sidecar_offline}
+            onClick={() => void save()}
+          >
+            {saving ? '保存中…' : '保存'}
+          </button>
+          {saveTip && (
+            <span className={`set-saved-tip${saveTip.ok ? '' : ' bad'}`}>{saveTip.text}</span>
+          )}
+          {!saveTip && dirty && <span className="set-hint">有未保存的修改</span>}
+        </div>
+
         {/* ── 版权信息 ─────────────────────────────── */}
         <footer className="set-footer">
           <div className="set-footer-line">
             © 2026 Nanyang Technological University · WANG QIALUN
           </div>
-          <div className="set-footer-line">V1.0.2</div>
+          <div className="set-footer-line">V1.0.3</div>
         </footer>
       </div>
     </div>

@@ -15,9 +15,20 @@ from app.config import get_settings
 from app.db import crud
 from app.db.models import PersonaUpdate
 from app.services.runtime import state
+from app.services.tasks import spawn
 
 PROFILE_EVERY = 4  # 每累计多少条第三视角用户消息，自动重塑一次画像
 HISTORY_LIMIT = 16
+
+# 同一人格同一时刻只跑一次画像生成（手动点击与自动触发可能撞车，后写覆盖先写）
+_locks: dict[str, asyncio.Lock] = {}
+
+
+def _lock_for(persona_id: str) -> asyncio.Lock:
+    lock = _locks.get(persona_id)
+    if lock is None:
+        lock = _locks[persona_id] = asyncio.Lock()
+    return lock
 
 
 class ProfileError(Exception):
@@ -30,12 +41,21 @@ def _profile_prompt(persona, dialog: str) -> str:
         traits = "、".join(str(t) for t in traits)
     except Exception:  # noqa: BLE001
         traits = ""
+    obs_lines = [ln.strip() for ln in (persona.observations or "").splitlines() if ln.strip()]
+    obs_block = ""
+    if obs_lines:
+        obs_block = (
+            "历次分析沉淀的观察（越靠下越新，冲突时以新的为准）：\n"
+            + "\n".join(f"- {ln}" for ln in obs_lines[-20:])
+            + "\n"
+        )
     return (
         f"基于下面的分析对话，输出「{persona.name}」的最新人物画像。\n"
         "现有画像（合并更新，不要丢失仍然成立的信息；如内容已过时请修正）：\n"
         f"- 概述：{persona.summary or '（无）'}\n"
         f"- 特征：{traits or '（无）'}\n"
         f"- 背景：{persona.background or '（无）'}\n"
+        f"{obs_block}"
         f"分析对话（最近，用户=「我」，分析对象=「{persona.name}」）：\n{dialog}\n"
         '只输出一个 JSON 对象，格式：{"summary": "一句话性格概述", '
         '"traits": ["特征1", "特征2"], "background": "身份与关系背景，一两句"}。'
@@ -45,7 +65,14 @@ def _profile_prompt(persona, dialog: str) -> str:
 
 async def build_profile(persona_id: str) -> dict:
     """生成并回写画像；失败抛 ProfileError。返回 {summary, traits, background}。"""
+    async with _lock_for(persona_id):
+        return await _build_profile_locked(persona_id)
+
+
+async def _build_profile_locked(persona_id: str) -> dict:
     settings = get_settings()
+    if not state.api_key:
+        raise ProfileError("未配置 API Key，请先到设置页保存")
     persona = await asyncio.to_thread(crud.get_persona, persona_id)
     if persona is None:
         raise ProfileError("人格不存在")
@@ -119,4 +146,4 @@ async def maybe_auto_profile(persona_id: str) -> None:
 
 def schedule_maybe_auto_profile(persona_id: str) -> None:
     """在事件循环上挂后台任务，不阻塞当前响应。"""
-    asyncio.create_task(maybe_auto_profile(persona_id))
+    spawn(maybe_auto_profile(persona_id))

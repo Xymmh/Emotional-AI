@@ -5,6 +5,7 @@ Embedding 再传入），便于把向量生成与存储解耦，也方便本步�
 """
 
 import asyncio
+import json
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -27,8 +28,43 @@ async def list_personas() -> list[dict]:
     return [r.model_dump(mode="json") for r in rows]
 
 
+NAME_MAX = 40
+SUMMARY_MAX = 200
+BACKGROUND_MAX = 1000
+TRAITS_MAX = 12
+
+
+def _clean_name(name: str) -> str:
+    name = (name or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="名字不能为空")
+    if len(name) > NAME_MAX:
+        raise HTTPException(status_code=400, detail=f"名字不能超过 {NAME_MAX} 个字")
+    return name
+
+
+def _clean_traits(raw: str) -> str:
+    """traits_json 必须是字符串数组；去空、去重、限长后重新序列化。"""
+    try:
+        data = json.loads(raw or "[]")
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail="traits_json 不是合法 JSON") from exc
+    if not isinstance(data, list):
+        raise HTTPException(status_code=400, detail="traits_json 必须是数组")
+    seen: list[str] = []
+    for t in data:
+        s = str(t).strip()[:30]
+        if s and s not in seen:
+            seen.append(s)
+    return json.dumps(seen[:TRAITS_MAX], ensure_ascii=False)
+
+
 @router.post("", dependencies=[Depends(require_sidecar_token)])
 async def create_persona(body: PersonaCreate) -> dict:
+    body.name = _clean_name(body.name)
+    body.traits_json = _clean_traits(body.traits_json)
+    body.summary = body.summary.strip()[:SUMMARY_MAX]
+    body.background = body.background.strip()[:BACKGROUND_MAX]
     persona = await asyncio.to_thread(crud.create_persona, body)
     return persona.model_dump(mode="json")
 
@@ -43,6 +79,14 @@ async def get_persona(persona_id: str) -> dict:
 
 @router.patch("/{persona_id}", dependencies=[Depends(require_sidecar_token)])
 async def update_persona(persona_id: str, body: PersonaUpdate) -> dict:
+    if body.name is not None:
+        body.name = _clean_name(body.name)
+    if body.traits_json is not None:
+        body.traits_json = _clean_traits(body.traits_json)
+    if body.summary is not None:
+        body.summary = body.summary.strip()[:SUMMARY_MAX]
+    if body.background is not None:
+        body.background = body.background.strip()[:BACKGROUND_MAX]
     persona = await asyncio.to_thread(crud.update_persona, persona_id, body)
     if persona is None:
         raise HTTPException(status_code=404, detail="人格不存在")
@@ -69,8 +113,11 @@ async def delete_persona(persona_id: str) -> dict:
     if not ok:
         raise HTTPException(status_code=404, detail="人格不存在")
     # 同步清理向量记忆
-    store = get_vector_store()
-    await store.delete_by_persona(persona_id)
+    # 同步清理向量记忆；结构化数据已删，向量清理失败只记日志，不让前端误以为删除失败
+    try:
+        await get_vector_store().delete_by_persona(persona_id)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[personas] vector cleanup failed persona={persona_id}: {exc!r}", flush=True)
     return {"deleted": True, "persona_id": persona_id}
 
 

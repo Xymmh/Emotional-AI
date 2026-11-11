@@ -73,5 +73,13 @@ async def verify_key(body: VerifyRequest) -> VerifyResponse:
 
 @router.put("/runtime", response_model=StatusResponse, dependencies=[Depends(require_sidecar_token)])
 async def update_runtime(body: RuntimeUpdateRequest) -> StatusResponse:
-    state.update(api_key=body.api_key, roleplay_model=body.roleplay_model)
+    settings = get_settings()
+    model = body.roleplay_model
+    # 只接受配置里的两款扮演模型：旧版本 config.json 残留的失效 ID 直接忽略，回落默认
+    if model is not None and model not in (
+        settings.roleplay_model_lite,
+        settings.roleplay_model_character,
+    ):
+        model = None
+    state.update(api_key=body.api_key, roleplay_model=model)
     return await get_status()

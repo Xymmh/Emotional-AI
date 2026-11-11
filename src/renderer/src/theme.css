@@ -1249,3 +1249,152 @@ body {
   background: #d03050;
   opacity: 0.88;
 }
+
+/* ==== V1.0.3 新增 ==== */
+
+/* 第三视角分析师回复：保留换行与分点（旧版缺这条样式，多行分析会挤成一段） */
+.msg-assistant {
+  font-size: 14.5px;
+  line-height: 1.75;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text);
+}
+
+/* 输入框下方的辅助操作行 */
+.chat-actions {
+  max-width: 780px;
+  margin: 6px auto 0;
+  padding: 0 4px;
+  display: flex;
+  gap: 12px;
+}
+
+.chat-action-btn {
+  padding: 0;
+  border: none;
+  background: transparent;
+  font-size: 12px;
+  color: var(--text-faint);
+  cursor: pointer;
+}
+
+.chat-action-btn:hover {
+  color: var(--text-dim);
+  text-decoration: underline;
+}
+
+.chat-empty .set-secondary-btn {
+  margin-top: 12px;
+}
+
+/* 侧栏：本地服务未就绪时的重试 */
+.conv-retry-btn {
+  display: block;
+  margin-top: 8px;
+  padding: 4px 10px;
+  font-size: 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.conv-retry-btn:hover {
+  color: var(--text);
+  border-color: var(--text-faint);
+}
+
+.profile-area {
+  gap: 6px;
+}
+
+/* 画像悬停卡：近期观察 */
+.profile-pop-obs {
+  border-top: 1px dashed var(--border);
+  padding-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.profile-pop-obs-title {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-faint);
+  letter-spacing: 0.4px;
+}
+
+.profile-pop-obs-item {
+  font-size: 12px;
+  color: var(--text-dim);
+  line-height: 1.6;
+  white-space: normal;
+}
+
+.profile-pop-obs-item::before {
+  content: '· ';
+  color: var(--text-faint);
+}
+
+/* 编辑画像表单 */
+.edit-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 380px;
+}
+
+.edit-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.edit-field .set-input {
+  width: 100%;
+}
+
+.edit-textarea {
+  height: auto;
+  min-height: 72px;
+  padding-top: 8px;
+  padding-bottom: 8px;
+  resize: vertical;
+  font-family: inherit;
+  line-height: 1.6;
+}
+
+.settings-warn {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.set-save-row .set-hint {
+  margin-top: 0;
+}
+
+.edit-field .set-input:not(.edit-textarea),
+.edit-textarea {
+  font-family: inherit;
+}
+
+/* .set-input 自带 flex:1（设置页横排用），在纵向表单里会被压扁，这里复位 */
+.edit-field .set-input {
+  flex: none;
+}
+
+.edit-field .set-input:not(.edit-textarea) {
+  height: 36px;
+}
+
+.app-modal:has(.edit-form) {
+  width: 460px;
+}
+
+.edit-form {
+  min-width: 0;
+}

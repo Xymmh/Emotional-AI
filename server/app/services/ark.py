@@ -102,9 +102,13 @@ async def embed_texts(api_key: str, texts: list[str]) -> list[list[float]]:
             emb = data.get("embedding")
         else:
             emb = None
-        return list(emb) if emb else [0.0] * dim
+        # 不能用零向量兜底：零向量的余弦相似度是 NaN，写进库会污染后续检索
+        if not emb:
+            raise ValueError("嵌入接口未返回向量")
+        if len(emb) != dim:
+            raise ValueError(f"嵌入维度应为 {dim}，实际 {len(emb)}")
+        return [float(x) for x in emb]
 
     async with httpx.AsyncClient() as client:
-        results = await asyncio.gather(*(embed_one(client, t) for t in texts))
-    return [list(v) for v in results]
+        return list(await asyncio.gather(*(embed_one(client, t) for t in texts)))
 

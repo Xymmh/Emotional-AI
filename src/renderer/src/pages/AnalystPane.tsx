@@ -1,14 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
+import AppModal from '../components/AppModal'
+import Composer from '../components/Composer'
+import { useConversation, useStickToBottom } from '../lib/useConversation'
+import { errorText } from '../lib/util'
 
 interface Msg {
   role: 'user' | 'assistant'
   content: string
-}
-
-interface Conversation {
-  id: string
-  persona_id: string
-  mode: string
 }
 
 interface AnalystPaneProps {
@@ -17,55 +15,46 @@ interface AnalystPaneProps {
   onProfileUpdated: () => void
 }
 
+/** 画像在后台异步沉淀（观察提炼 + 每 4 轮自动重塑），分几次刷新侧栏以拿到最新结果 */
+const PROFILE_REFRESH_DELAYS = [0, 5000, 15000]
+
 /** 第三视角：发聊天记录 / 描述情况，分析师流式解读，画像自动塑造 */
 export default function AnalystPane({ personaId, personaName, onProfileUpdated }: AnalystPaneProps) {
+  const { history, loading, loadError, reload, clear, convId } = useConversation(
+    personaId,
+    'analyst',
+  )
   const [messages, setMessages] = useState<Msg[]>([])
   const [input, setInput] = useState('')
   const [streaming, setStreaming] = useState(false)
   const [error, setError] = useState('')
   const [agentStatus, setAgentStatus] = useState('')
-  const scrollRef = useRef<HTMLDivElement>(null)
-  const taRef = useRef<HTMLTextAreaElement>(null)
+  const [confirmClear, setConfirmClear] = useState(false)
+  const [clearing, setClearing] = useState(false)
+  const { ref: scrollRef, stick } = useStickToBottom(messages)
   // 在途流凭据：中断按钮据此调用 stop；stopRequested 区分「主动中断」与「真实报错」
   const streamIdRef = useRef('')
   const stopRequestedRef = useRef(false)
+  const timersRef = useRef<number[]>([])
 
   useEffect(() => {
-    let cancelled = false
-    void (async () => {
-      try {
-        const convs = await window.appApi.request<Conversation[]>(
-          `/api/conversations?persona_id=${personaId}`,
-        )
-        const conv = (convs ?? []).find((c) => c.mode === 'analyst')
-        if (cancelled) return
-        if (conv) {
-          const history = await window.appApi.request<Msg[]>(
-            `/api/messages?conversation_id=${conv.id}`,
-          )
-          if (cancelled) return
-          setMessages(
-            (history ?? [])
-              .filter((m) => m.role === 'user' || m.role === 'assistant')
-              .map((m) => ({ role: m.role, content: m.content })),
-          )
-        }
-      } catch {
-        // 首次发送时由后端自建
-      }
-    })()
-    return () => {
-      cancelled = true
-    }
-  }, [personaId])
+    if (!history) return
+    setMessages(history.map((m) => ({ role: m.role as Msg['role'], content: m.content })))
+  }, [history])
+
+  useEffect(() => () => timersRef.current.forEach((t) => window.clearTimeout(t)), [])
+
+  const scheduleProfileRefresh = () => {
+    timersRef.current.forEach((t) => window.clearTimeout(t))
+    timersRef.current = PROFILE_REFRESH_DELAYS.map((d) => window.setTimeout(onProfileUpdated, d))
+  }
 
   const send = async () => {
     const content = input.trim()
     if (!content || streaming) return
     setError('')
     setInput('')
-    if (taRef.current) taRef.current.style.height = 'auto'
-    // 记录发送前的消息数：中断时据此回滚到上一轮结束的状态
+    stick()
     const prevCount = messages.length
     setMessages((prev) => [
       ...prev,
@@ -96,21 +85,15 @@ export default function AnalystPane({ personaId, personaName, onProfileUpdated }
         (status) => setAgentStatus(status),
         sid,
       )
-      onProfileUpdated()
+      scheduleProfileRefresh()
     } catch (e) {
       if (stopRequestedRef.current) {
-        // 主动中断：丢弃本轮未完成内容并回滚服务端已落库的消息。
-        // 分析师会话由服务端创建，客户端无ID，按 persona_id + mode 定位
+        // 主动中断：服务端已撤销本轮（不存半截分析、不沉淀记忆），这里同步丢弃本地内容，
+        // 并把原文还给输入框，长段聊天记录不用重新粘贴
         setMessages((prev) => prev.slice(0, prevCount))
-        void window.appApi
-          .request('/api/chat/rollback', 'POST', {
-            persona_id: personaId,
-            mode: 'analyst',
-            keep: prevCount,
-          })
-          .catch(() => {})
+        setInput((cur) => cur || content)
       } else {
-        setError(e instanceof Error ? e.message : '生成失败')
+        setError(errorText(e, '生成失败'))
         setMessages((prev) => {
           const last = prev[prev.length - 1]
           if (last && last.role === 'assistant' && !last.content) return prev.slice(0, -1)
@@ -131,15 +114,37 @@ export default function AnalystPane({ personaId, personaName, onProfileUpdated }
     void window.appApi.chat.stop({ streamId: streamIdRef.current })
   }
 
-  useEffect(() => {
-    const el = scrollRef.current
-    if (el) el.scrollTop = el.scrollHeight
-  }, [messages])
+  const handleClear = async () => {
+    if (clearing) return
+    setClearing(true)
+    try {
+      await clear()
+      setMessages([])
+      setError('')
+    } catch (e) {
+      setError(errorText(e, '清空失败'))
+    } finally {
+      setClearing(false)
+      setConfirmClear(false)
+    }
+  }
 
   return (
     <div className="chat-page">
       <div className="chat-messages" ref={scrollRef}>
-        {messages.length === 0 ? (
+        {loading && messages.length === 0 ? (
+          <div className="chat-empty">
+            <div className="agent-status-spinner" />
+          </div>
+        ) : loadError ? (
+          <div className="chat-empty">
+            <div className="chat-empty-title">历史加载失败</div>
+            <div className="chat-empty-hint">{loadError}</div>
+            <button type="button" className="set-secondary-btn" onClick={() => void reload()}>
+              重试
+            </button>
+          </div>
+        ) : messages.length === 0 ? (
           <div className="chat-empty">
             <div className="chat-empty-title">第三视角 · 分析「{personaName}」</div>
             <div className="chat-empty-hint">
@@ -154,10 +159,12 @@ export default function AnalystPane({ personaId, personaName, onProfileUpdated }
                 {m.role === 'assistant' ? (
                   <>
                     <div className="msg-label">ANALYST</div>
-                    <div className="msg-assistant">
-                      {m.content}
-                      {streaming && i === messages.length - 1 && <span className="msg-caret" />}
-                    </div>
+                    {(m.content || !(streaming && i === messages.length - 1 && agentStatus)) && (
+                      <div className="msg-assistant">
+                        {m.content}
+                        {streaming && i === messages.length - 1 && <span className="msg-caret" />}
+                      </div>
+                    )}
                   </>
                 ) : (
                   <div className="msg-user-row">
@@ -176,53 +183,42 @@ export default function AnalystPane({ personaId, personaName, onProfileUpdated }
         )}
       </div>
 
-      <div className="chat-composer">
-        {error && <div className="chat-error">{error}</div>}
-        <div className="chat-composer-inner">
-          <textarea
-            ref={taRef}
-            className="chat-input"
-            rows={1}
-            placeholder="粘贴聊天记录或描述情况…（Enter 发送，Shift+Enter 换行）"
-            value={input}
-            onChange={(e) => {
-              setInput(e.target.value)
-              const el = e.target
-              el.style.height = 'auto'
-              el.style.height = `${Math.min(el.scrollHeight, 160)}px`
-            }}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault()
-                void send()
-              }
-            }}
-          />
-          {streaming ? (
+      <Composer
+        value={input}
+        onChange={setInput}
+        onSend={() => void send()}
+        onStop={stopStream}
+        streaming={streaming}
+        disabled={!convId}
+        error={error}
+        placeholder="粘贴聊天记录或描述情况…（Enter 发送，Shift+Enter 换行）"
+        actions={
+          messages.length > 0 && !streaming ? (
             <button
               type="button"
-              className="chat-send stop"
-              onClick={stopStream}
-              aria-label="停止生成"
-              title="停止生成"
+              className="chat-action-btn"
+              onClick={() => setConfirmClear(true)}
             >
-              <svg width="11" height="11" viewBox="0 0 11 11">
-                <rect x="1.5" y="1.5" width="8" height="8" rx="2" fill="currentColor" />
-              </svg>
+              清空分析记录
             </button>
-          ) : (
-            <button
-              type="button"
-              className="chat-send"
-              disabled={!input.trim()}
-              onClick={() => void send()}
-              aria-label="发送"
-            >
-              ↑
-            </button>
-          )}
+          ) : null
+        }
+      />
+
+      <AppModal
+        visible={confirmClear}
+        title="清空分析记录"
+        okText="清空"
+        danger
+        loading={clearing}
+        loadingText="清空中…"
+        onOk={() => void handleClear()}
+        onCancel={() => setConfirmClear(false)}
+      >
+        <div className="app-modal-desc">
+          将清空第三视角的对话记录。已沉淀的画像、观察与记忆会保留，主视角扮演不受影响。
         </div>
-      </div>
+      </AppModal>
     </div>
   )
 }

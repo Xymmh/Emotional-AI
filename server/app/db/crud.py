@@ -3,9 +3,11 @@
 把 DB 逻辑收敛在这里，路由保持薄；后续若换异步引擎只改本文件。
 """
 
+import threading
 import uuid
 from datetime import datetime, timezone
 
+from sqlalchemy import literal_column
 from sqlmodel import Session, delete, select
 
 from app.db.engine import get_engine
@@ -21,8 +23,16 @@ from app.db.models import (
 )
 
 
+_ensure_lock = threading.Lock()
+
+
 def _new_id() -> str:
     return uuid.uuid4().hex
+
+
+# 消息排序：created_at 可能同值（同一微秒内写入两条），再按 SQLite rowid（插入顺序）
+# 兜底，保证列表 / 回滚 / 删除轮次三处看到的顺序完全一致。
+_MSG_ORDER = (Message.created_at.asc(), literal_column("messages.rowid").asc())
 
 
 # ---------------- Persona ----------------
@@ -113,11 +123,28 @@ def get_conversation(conversation_id: str) -> Conversation | None:
 
 def get_conversation_by_persona_mode(persona_id: str, mode: str) -> Conversation | None:
     with Session(get_engine()) as session:
-        stmt = select(Conversation).where(
-            Conversation.persona_id == persona_id,
-            Conversation.mode == mode,
+        stmt = (
+            select(Conversation)
+            .where(Conversation.persona_id == persona_id, Conversation.mode == mode)
+            .order_by(Conversation.updated_at.desc())
         )
         return session.exec(stmt).first()
+
+
+def ensure_conversation(persona_id: str, mode: str, title: str = "") -> Conversation:
+    """取该人格指定模式的会话（多个时取最近活跃的），不存在则新建。
+
+    主视角 / 第三视角各只需要一个会话；统一由服务端 get-or-create，
+    避免客户端没拿到会话 ID 时重复创建，导致重启后历史「消失」。
+    """
+    # 串行化「查 + 建」：两个并发请求（如界面同时加载 + 发送）否则会各建一个会话
+    with _ensure_lock:
+        conv = get_conversation_by_persona_mode(persona_id, mode)
+        if conv is not None:
+            return conv
+        return create_conversation(
+            ConversationCreate(persona_id=persona_id, mode=mode, title=title)
+        )
 
 
 def rollback_messages(conversation_id: str, keep: int) -> int:
@@ -130,13 +157,43 @@ def rollback_messages(conversation_id: str, keep: int) -> int:
         rows = session.exec(
             select(Message)
             .where(Message.conversation_id == conversation_id)
-            .order_by(Message.created_at, Message.id)
+            .order_by(*_MSG_ORDER)
         ).all()
         stale = rows[max(0, keep):]
         for m in stale:
             session.delete(m)
         session.commit()
         return len(stale)
+
+
+def delete_messages_from(conversation_id: str, message_id: str) -> int:
+    """删除会话中 message_id 这条及其之后的全部消息，返回删除条数。
+
+    供服务端在「生成被中断」时撤销本轮：从本轮用户消息开始整段删除。
+    以消息 ID 定位而不是依赖客户端计数，客户端历史没加载全也不会误删。
+    """
+    with Session(get_engine()) as session:
+        rows = session.exec(
+            select(Message)
+            .where(Message.conversation_id == conversation_id)
+            .order_by(*_MSG_ORDER)
+        ).all()
+        idx = next((i for i, m in enumerate(rows) if m.id == message_id), None)
+        if idx is None:
+            return 0
+        stale = rows[idx:]
+        for m in stale:
+            session.delete(m)
+        session.commit()
+        return len(stale)
+
+
+def clear_messages(conversation_id: str) -> int:
+    """清空会话内全部消息（保留会话本身），返回删除条数。"""
+    with Session(get_engine()) as session:
+        result = session.exec(delete(Message).where(Message.conversation_id == conversation_id))
+        session.commit()
+        return result.rowcount or 0
 
 
 def touch_conversation(conversation_id: str) -> None:
@@ -178,7 +235,7 @@ def list_messages(conversation_id: str) -> list[Message]:
         rows = session.exec(
             select(Message)
             .where(Message.conversation_id == conversation_id)
-            .order_by(Message.created_at.asc())
+            .order_by(*_MSG_ORDER)
         ).all()
         return list(rows)
 

@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { IconPlus, IconSettings } from '@arco-design/web-react/icon'
 import AppModal from './components/AppModal'
+import { errorText } from './lib/util'
 import Workspace from './pages/Workspace'
 import SettingsPage from './pages/Settings'
 
@@ -10,6 +11,7 @@ export interface PersonaLite {
   summary: string
   traits_json: string
   background: string
+  observations: string
 }
 
 export default function App() {
@@ -28,18 +30,37 @@ export default function App() {
   const [deleting, setDeleting] = useState(false)
   const [deleteError, setDeleteError] = useState('')
 
+  // 本地服务连接状态：启动阶段 Python 冷启动需要几秒，失败时自动退避重试
+  const [backend, setBackend] = useState<'connecting' | 'online' | 'offline'>('connecting')
+  const retryTimer = useRef<number | undefined>(undefined)
+  const retryCount = useRef(0)
+
   const refresh = useCallback(async () => {
+    window.clearTimeout(retryTimer.current)
     try {
       const rows = await window.appApi.request<PersonaLite[]>('/api/personas')
       setPersonas(rows ?? [])
+      setBackend('online')
+      retryCount.current = 0
     } catch {
-      setPersonas([])
+      // 保留现有列表：瞬时失败不能把已打开的对话全部卸载
+      setBackend('offline')
+      const delay = Math.min(2000 * 2 ** retryCount.current, 30000)
+      retryCount.current += 1
+      retryTimer.current = window.setTimeout(() => void refresh(), delay)
     }
   }, [])
 
   useEffect(() => {
     void refresh()
+    return () => window.clearTimeout(retryTimer.current)
   }, [refresh])
+
+  const openCreate = () => {
+    setNewName('')
+    setCreateError('')
+    setModalOpen(true)
+  }
 
   const openPersona = (id: string) => {
     setMountedIds((prev) => (prev.includes(id) ? prev : [...prev, id]))
@@ -64,7 +85,7 @@ export default function App() {
       await refresh()
       openPersona(p.id)
     } catch (e) {
-      setCreateError(e instanceof Error ? e.message : '创建失败，请重试')
+      setCreateError(errorText(e, '创建失败，请重试'))
     } finally {
       setCreating(false)
     }
@@ -87,7 +108,7 @@ export default function App() {
       setDeleteTarget(null)
       await refresh()
     } catch (e) {
-      setDeleteError(e instanceof Error ? e.message : '删除失败，请重试')
+      setDeleteError(errorText(e, '删除失败，请重试'))
     } finally {
       setDeleting(false)
     }
@@ -120,14 +141,32 @@ export default function App() {
             type="button"
             className="new-chat-btn"
             title="新建对话"
-            onClick={() => setModalOpen(true)}
+            onClick={openCreate}
           >
             <IconPlus />
             {!collapsed && '新建对话'}
           </button>
 
           <div className="conv-list">
-            {personas.length === 0 && !collapsed && (
+            {backend !== 'online' && !collapsed && (
+              <div className="conv-empty">
+                {backend === 'connecting' ? '正在连接本地服务…' : '本地服务未就绪，正在自动重试…'}
+                {backend === 'offline' && (
+                  <button
+                    type="button"
+                    className="conv-retry-btn"
+                    onClick={() => {
+                      retryCount.current = 0
+                      setBackend('connecting')
+                      void refresh()
+                    }}
+                  >
+                    立即重试
+                  </button>
+                )}
+              </div>
+            )}
+            {backend === 'online' && personas.length === 0 && !collapsed && (
               <div className="conv-empty">还没有对话。点上方「新建对话」开始。</div>
             )}
             {personas.map((p) => (
@@ -270,6 +309,7 @@ export default function App() {
           className="set-input app-modal-input"
           placeholder="例如：小林"
           value={newName}
+          maxLength={40}
           autoFocus
           onChange={(e) => setNewName(e.target.value)}
         />

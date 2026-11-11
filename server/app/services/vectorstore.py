@@ -27,6 +27,9 @@ import lancedb
 
 from app.config import get_settings, lancedb_dir_path
 
+# 分析师洞察入库时的文本前缀，与原始对话行区分（主视角据此分组带入提示词）
+INSIGHT_PREFIX = "【分析师洞察】"
+
 # persona_id 是 uuid4().hex（纯十六进制），嵌入 SQL 谓词前做严格校验，杜绝注入风险
 _SAFE_ID = re.compile(r"^[A-Za-z0-9_-]+$")
 

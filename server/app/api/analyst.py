@@ -20,20 +20,21 @@ from volcenginesdkarkruntime import AsyncArk
 from app.api.security import require_sidecar_token
 from app.config import get_settings
 from app.db import crud
-from app.db.models import ConversationCreate, MessageCreate, PersonaUpdate
+from app.db.models import MessageCreate, PersonaUpdate
 from app.services import ark
 from app.services.context import collect_history
 from app.services.profile import schedule_maybe_auto_profile
 from app.services.runtime import state
-from app.services.vectorstore import get_vector_store
+from app.services.tasks import spawn
+from app.services.vectorstore import INSIGHT_PREFIX, get_vector_store
 
 router = APIRouter(prefix="/api/analyst", tags=["analyst"])
 
 HISTORY_BUDGET_TOKENS = 12000  # 历史窗口 token 预算（聊天记录粘贴可能很长，按预算收集更稳）
-MEMORY_MAX_LINES = 60
-MEMORY_LINE_CHARS = 200
+MEMORY_MAX_LINES = 200   # 单轮最多入记忆的对话行数
+MEMORY_LINE_CHARS = 200  # 单条记忆最长字符数
+NORMALIZE_MAX_CHARS = 6000  # 超过该长度的粘贴不再交给 LLM 逐句整理
 
-INSIGHT_PREFIX = "【分析师洞察】"  # 入向量库的分析洞察前缀，与原始对话行区分
 OBS_LINE_CHARS = 60   # 单条观察短句上限
 OBS_MAX_CHARS = 2000  # persona.observations 总长上限，超长丢最旧
 
@@ -44,14 +45,7 @@ class AnalystStreamRequest(BaseModel):
 
 
 async def _ensure_analyst_conversation(persona_id: str) -> str:
-    convs = await asyncio.to_thread(crud.list_conversations, persona_id)
-    for conv in convs:
-        if conv.mode == "analyst":
-            return conv.id
-    conv = await asyncio.to_thread(
-        crud.create_conversation,
-        ConversationCreate(persona_id=persona_id, mode="analyst", title="第三视角"),
-    )
+    conv = await asyncio.to_thread(crud.ensure_conversation, persona_id, "analyst", "第三视角")
     return conv.id
 
 
@@ -131,14 +125,22 @@ def _normalize_prompt(persona_name: str, content: str) -> str:
 
 
 async def _normalize_dialog(persona_name: str, content: str) -> list[str]:
-    """整理 Agent：LLM 判断说话人并整理对话行。失败时回退为整段原文一行。"""
+    """整理 Agent：LLM 判断说话人并整理对话行。
+
+    返回完整的对话行（不截断，供分析师看全貌；入记忆时另行限长）。
+    输入过长或整理失败时回退为「按原文逐行」，而不是只留一行截断原文——
+    否则长记录的分析与记忆都只剩开头几十个字。
+    """
+    if len(content) > NORMALIZE_MAX_CHARS:
+        # 太长的粘贴让模型逐句重写既慢又容易被 max_tokens 截断成残缺 JSON，直接按行用原文
+        return _raw_lines(content)
     settings = get_settings()
-    client = AsyncArk(api_key=state.api_key, base_url=settings.ark_base_url, timeout=60.0)
+    client = AsyncArk(api_key=state.api_key, base_url=settings.ark_base_url, timeout=90.0)
     try:
         resp = await client.chat.completions.create(
             model=settings.chat_model,
             messages=[{"role": "user", "content": _normalize_prompt(persona_name, content)}],
-            max_tokens=2000,
+            max_tokens=4000,
             temperature=0.1,
         )
         text = (resp.choices[0].message.content or "").strip()
@@ -146,13 +148,20 @@ async def _normalize_dialog(persona_name: str, content: str) -> list[str]:
         if start == -1 or end <= start:
             raise ValueError("no array")
         data = json.loads(text[start : end + 1])
-        lines = [str(x).strip()[:MEMORY_LINE_CHARS] for x in data if str(x).strip()]
-        return lines[:MEMORY_MAX_LINES] or [f"用户输入：{content[:MEMORY_LINE_CHARS]}"]
+        if not isinstance(data, list):
+            raise ValueError("not a list")
+        lines = [str(x).strip() for x in data if str(x).strip()]
+        return lines or _raw_lines(content)
     except Exception as exc:  # noqa: BLE001 - 整理失败不阻塞分析，回退原文
         print(f"[analyst] normalize failed, fallback to raw: {exc!r}", flush=True)
-        return [f"用户输入：{content[:MEMORY_LINE_CHARS]}"]
+        return _raw_lines(content)
     finally:
         await client.close()
+
+
+def _raw_lines(content: str) -> list[str]:
+    """回退：原文按非空行切分。"""
+    return [ln.strip() for ln in content.splitlines() if ln.strip()]
 
 
 async def _append_memories(persona_id: str, lines: list[str]) -> None:
@@ -264,22 +273,22 @@ async def analyst_stream(body: AnalystStreamRequest):
         raise HTTPException(status_code=400, detail="内容不能为空")
 
     conv_id = await _ensure_analyst_conversation(persona.id)
-    await asyncio.to_thread(
+    user_msg = await asyncio.to_thread(
         crud.add_message,
         MessageCreate(conversation_id=conv_id, role="user", content=content),
     )
+    api_key = state.api_key
+
+    def sse(obj: dict) -> str:
+        return "data: " + json.dumps(obj, ensure_ascii=False) + "\n\n"
 
     async def gen():
-        client = AsyncArk(
-            api_key=state.api_key, base_url=settings.ark_base_url, timeout=120.0
-        )
+        client = AsyncArk(api_key=api_key, base_url=settings.ark_base_url, timeout=120.0)
         acc: list[str] = []
         dialog_lines: list[str] = []
-        history: list = []  # 供 finally 计算轮次号；未取到时按首轮处理
+        history: list = []  # 供收尾计算轮次号；未取到时按首轮处理
         failed = False
-
-        def sse(obj: dict) -> str:
-            return "data: " + json.dumps(obj, ensure_ascii=False) + "\n\n"
+        cancelled = False
 
         try:
             # ---- Agent 链路（每步都流式上报状态，像 IDE 里的 agent 反馈） ----
@@ -291,11 +300,13 @@ async def analyst_stream(body: AnalystStreamRequest):
                 yield sse({"type": "status", "text": f"识别出 {len(dialog_lines)} 条对话，开始分析"})
                 user_view = "【整理后的对话】\n" + "\n".join(dialog_lines)
             else:
+                yield sse({"type": "status", "text": "分析中"})
                 user_view = content
 
             history = await asyncio.to_thread(crud.list_messages, conv_id)
-            # 最后一条是刚发的原文，按输入类型替换成整理后的 user_view，不进窗口
-            window = collect_history(history[:-1], HISTORY_BUDGET_TOKENS)
+            # 本轮用户消息按输入类型替换成整理后的 user_view，不进历史窗口
+            prior = [m for m in history if m.id != user_msg.id]
+            window = collect_history(prior, HISTORY_BUDGET_TOKENS)
             chat_history = [
                 {"role": m.role, "content": m.content}
                 for m in window
@@ -317,7 +328,7 @@ async def analyst_stream(body: AnalystStreamRequest):
                 model=settings.analyst_model,
                 messages=messages,  # type: ignore[arg-type]
                 stream=True,
-                max_tokens=800,
+                max_tokens=1200,
                 temperature=0.6,
             )
             async for chunk in stream:
@@ -327,33 +338,45 @@ async def analyst_stream(body: AnalystStreamRequest):
                 if text:
                     acc.append(text)
                     yield sse({"type": "delta", "text": text})
+        except (asyncio.CancelledError, GeneratorExit):
+            cancelled = True
+            raise
         except Exception as exc:  # noqa: BLE001
             failed = True
             yield sse({"type": "error", "text": f"{type(exc).__name__}: {exc}"})
         finally:
-            text = "".join(acc).strip()
-            if text:
+            if cancelled:
+                # 用户主动中断：撤销本轮（删本轮用户消息，不存半截分析、不沉淀记忆）。
+                # 处于取消态不能再 await / yield，同步删除，客户端关闭交给后台。
                 try:
-                    await asyncio.to_thread(
-                        crud.add_message,
-                        MessageCreate(conversation_id=conv_id, role="assistant", content=text),
+                    crud.delete_messages_from(conv_id, user_msg.id)
+                except Exception as exc:  # noqa: BLE001
+                    print(f"[analyst] rollback on cancel failed: {exc!r}", flush=True)
+                spawn(client.close())
+            else:
+                text = "".join(acc).strip()
+                if text:
+                    try:
+                        await asyncio.to_thread(
+                            crud.add_message,
+                            MessageCreate(conversation_id=conv_id, role="assistant", content=text),
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        print(f"[analyst] persist reply failed: {exc!r}", flush=True)
+                # 先挂后台收尾再发 done：即使客户端收到 done 立刻断开，沉淀也不会丢。
+                # 完整分析 → 提炼观察短句并沉淀；失败的轮次只回填原始对话行记忆。
+                round_no = sum(1 for m in history if m.role == "assistant") + 1
+                if text and not failed:
+                    spawn(
+                        _post_turn_insights(
+                            persona.id, round_no, persona.name, dialog_lines, text
+                        )
                     )
-                except Exception:  # noqa: BLE001
-                    pass
-            yield sse({"type": "done"})
-            # 流结束后异步收尾（不阻塞 SSE）：完整分析 → 提炼观察短句并沉淀入库；
-            # 中断/失败的轮次只回填原始对话行记忆。画像照常按轮次触发。
-            round_no = sum(1 for m in history if m.role == "assistant") + 1
-            if text and not failed:
-                asyncio.create_task(
-                    _post_turn_insights(
-                        persona.id, round_no, persona.name, dialog_lines, text
-                    )
-                )
-            elif dialog_lines:
-                asyncio.create_task(_append_memories(persona.id, dialog_lines))
-            schedule_maybe_auto_profile(persona.id)
-            await client.close()
+                elif dialog_lines:
+                    spawn(_append_memories(persona.id, dialog_lines))
+                schedule_maybe_auto_profile(persona.id)
+                await client.close()
+                yield sse({"type": "done"})
 
     return StreamingResponse(
         gen(),

@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react'
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
+import { isComposing } from '../lib/util'
 
 interface AppModalProps {
   visible: boolean
@@ -31,17 +32,29 @@ export default function AppModal({
   onOk,
   onCancel,
 }: AppModalProps) {
+  // 键盘监听只在 visible/loading 变化时重绑，回调必须经 ref 取最新值：
+  // 否则 Enter 触发的是弹窗打开那一刻的 onOk，读到的输入框内容是空的
+  const handlersRef = useRef({ onOk, onCancel })
+  handlersRef.current = { onOk, onCancel }
+
   useEffect(() => {
     if (!visible) return
     const onKey = (e: KeyboardEvent) => {
       if (loading) return
+      const { onOk, onCancel } = handlersRef.current
       if (e.key === 'Escape') onCancel()
-      if (e.key === 'Enter') onOk()
+      // 输入法组字中的 Enter 是上屏；多行输入框里的 Enter 是换行，都不能当「确定」
+      if (
+        e.key === 'Enter' &&
+        !isComposing(e) &&
+        !(e.target instanceof HTMLTextAreaElement)
+      ) {
+        e.preventDefault()
+        onOk()
+      }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-    // visible 翻转时重新绑定；onOk/onCancel 取当次渲染闭包即可
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible, loading])
 
   if (!visible) return null

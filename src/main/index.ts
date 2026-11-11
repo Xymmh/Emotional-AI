@@ -7,10 +7,57 @@ import {
   maskSecret,
   saveSecureValue,
 } from './secure-store'
-import { SidecarInfo, startSidecar, stopSidecar } from './sidecar'
+import { onSidecarExit, SidecarInfo, startSidecar, stopSidecar } from './sidecar'
 
 let mainWindow: BrowserWindow | null = null
 let sidecar: SidecarInfo | null = null
+let starting: Promise<SidecarInfo> | null = null
+let quitting = false
+
+// ---- 侧车生命周期：懒启动 + 崩溃后自动重启 ----
+
+/**
+ * 取可用的侧车连接；未启动（或上次启动失败 / 进程崩溃）时尝试启动一次。
+ * 并发调用共享同一个启动过程，避免重复 spawn。
+ */
+async function ensureSidecar(): Promise<SidecarInfo> {
+  if (sidecar) return sidecar
+  if (quitting) throw new Error('应用正在退出')
+  if (!starting) {
+    starting = (async () => {
+      const info = await startSidecar()
+      sidecar = info
+      await syncRuntime(info)
+      return info
+    })().finally(() => {
+      starting = null
+    })
+  }
+  return starting
+}
+
+onSidecarExit(() => {
+  sidecar = null
+})
+
+/**
+ * 把本地保存的 Key 与扮演模型推送给侧车。
+ * 开发态拉起的侧车不注入 Key、生产态也不注入模型选择，若不推送，
+ * 重启应用后设置页保存过的配置就「失效」了。
+ */
+async function syncRuntime(info: SidecarInfo): Promise<void> {
+  const apiKey = loadSecureValue('arkApiKey')
+  const roleplayModel = readConfig().roleplayModel
+  if (!apiKey && !roleplayModel) return
+  try {
+    await rawCall(info, '/api/settings/runtime', {
+      method: 'PUT',
+      body: { api_key: apiKey || null, roleplay_model: roleplayModel || null },
+    })
+  } catch (error) {
+    console.error('同步运行时配置失败', error)
+  }
+}
 
 // ---- 侧车 HTTP 调用（令牌只在主进程内存中，渲染进程拿不到）----
 
@@ -19,21 +66,42 @@ interface FetchOptions {
   body?: unknown
 }
 
-async function callSidecar<T>(path: string, options: FetchOptions = {}): Promise<T> {
-  if (!sidecar) throw new Error('本地服务未启动')
-  const resp = await fetch(`${sidecar.url}${path}`, {
-    method: options.method ?? 'GET',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-Sidecar-Token': sidecar.token,
-    },
-    body: options.body === undefined ? undefined : JSON.stringify(options.body),
-  })
-  const data = (await resp.json().catch(() => null)) as T & { detail?: string } | null
+async function rawCall<T>(info: SidecarInfo, path: string, options: FetchOptions = {}): Promise<T> {
+  let resp: Response
+  try {
+    resp = await fetch(`${info.url}${path}`, {
+      method: options.method ?? 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Sidecar-Token': info.token,
+      },
+      body: options.body === undefined ? undefined : JSON.stringify(options.body),
+    })
+  } catch {
+    // 连接被拒：侧车多半已退出，清掉连接信息让下次请求自动重启
+    if (sidecar === info) sidecar = null
+    throw new Error('无法连接本地服务，请稍后重试')
+  }
+  const data = (await resp.json().catch(() => null)) as (T & { detail?: unknown }) | null
   if (!resp.ok) {
-    throw new Error(data?.detail ?? `本地服务请求失败（HTTP ${resp.status}）`)
+    throw new Error(formatDetail(data?.detail) ?? `本地服务请求失败（HTTP ${resp.status}）`)
   }
   return data as T
+}
+
+/** FastAPI 的 detail 可能是字符串，也可能是 422 校验错误数组 */
+function formatDetail(detail: unknown): string | undefined {
+  if (typeof detail === 'string') return detail
+  if (Array.isArray(detail) && detail.length > 0) {
+    const first = detail[0] as { msg?: string; loc?: unknown[] }
+    return `请求参数有误：${first.loc?.slice(1).join('.') ?? ''} ${first.msg ?? ''}`.trim()
+  }
+  return undefined
+}
+
+async function callSidecar<T>(path: string, options: FetchOptions = {}): Promise<T> {
+  const info = await ensureSidecar()
+  return rawCall<T>(info, path, options)
 }
 
 // ---- IPC：设置 ----
@@ -65,14 +133,15 @@ ipcMain.handle('settings:verify', async (_event, apiKey?: string) => {
 ipcMain.handle(
   'settings:save',
   async (_event, payload: { apiKey?: string; roleplayModel?: string }) => {
-    if (payload.apiKey) {
-      saveSecureValue('arkApiKey', payload.apiKey.trim())
+    const newKey = payload.apiKey?.trim()
+    if (newKey) {
+      saveSecureValue('arkApiKey', newKey)
     }
     if (payload.roleplayModel) {
       writeConfig({ roleplayModel: payload.roleplayModel })
     }
     // 推送给后端使其立即生效（模型切换 / Key 更新都不用重启）
-    const effectiveKey = payload.apiKey ?? loadSecureValue('arkApiKey') ?? ''
+    const effectiveKey = newKey || loadSecureValue('arkApiKey') || ''
     return callSidecar('/api/settings/runtime', {
       method: 'PUT',
       body: {
@@ -86,6 +155,9 @@ ipcMain.handle(
 // ---- IPC：通用代理（人格 / 会话 / 消息等） ----
 
 ipcMain.handle('sidecar:request', (_event, path: string, method?: string, body?: unknown) => {
+  if (typeof path !== 'string' || !path.startsWith('/api/')) {
+    throw new Error('非法的请求路径')
+  }
   return callSidecar(path, { method, body })
 })
 
@@ -100,9 +172,13 @@ const activeStreams = new Map<
 
 ipcMain.handle(
   'chat:stream',
-  async (_event, payload: { streamId?: string; path?: string; content: string; conversation_id?: string; persona_id?: string }) => {
-    if (!sidecar) throw new Error('本地服务未启动')
+  async (event, payload: { streamId?: string; path?: string; content: string; conversation_id?: string; persona_id?: string }) => {
+    const info = await ensureSidecar()
     const { path = '/api/chat/stream', streamId = '', ...body } = payload
+    // 只允许转发两条流式接口，防止渲染层借此访问任意路径
+    if (path !== '/api/chat/stream' && path !== '/api/analyst/stream') {
+      throw new Error('不支持的流式接口')
+    }
     const controller = new AbortController()
     if (streamId) {
       activeStreams.set(streamId, {
@@ -113,18 +189,25 @@ ipcMain.handle(
     }
     let reader: ReadableStreamDefaultReader<Uint8Array> | null = null
     try {
-      const resp = await fetch(`${sidecar.url}${path}`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Sidecar-Token': sidecar.token,
-        },
-        body: JSON.stringify(body),
-        signal: controller.signal,
-      })
+      let resp: Response
+      try {
+        resp = await fetch(`${info.url}${path}`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Sidecar-Token': info.token,
+          },
+          body: JSON.stringify(body),
+          signal: controller.signal,
+        })
+      } catch (error) {
+        if (controller.signal.aborted) throw error
+        if (sidecar === info) sidecar = null
+        throw new Error('无法连接本地服务，请稍后重试')
+      }
       if (!resp.ok) {
-        const data = (await resp.json().catch(() => null)) as { detail?: string } | null
-        throw new Error(data?.detail ?? `本地服务请求失败（HTTP ${resp.status}）`)
+        const data = (await resp.json().catch(() => null)) as { detail?: unknown } | null
+        throw new Error(formatDetail(data?.detail) ?? `本地服务请求失败（HTTP ${resp.status}）`)
       }
       if (!resp.body) throw new Error('本地服务未返回流')
 
@@ -134,9 +217,14 @@ ipcMain.handle(
       let errorText: string | null = null
 
       // 事件均携带 streamId：并发多路流时由 preload 按ID认领，避免互相串扰
-      const emit = (text: string) => mainWindow?.webContents.send('chat:delta', streamId, text)
-      const emitThought = (text: string) => mainWindow?.webContents.send('chat:thought', streamId, text)
-      const emitStatus = (text: string) => mainWindow?.webContents.send('chat:status', streamId, text)
+      // 发给发起请求的那个页面；窗口已关闭时静默丢弃，避免 "Object has been destroyed"
+      const sender = event.sender
+      const send = (channel: string, text: string) => {
+        if (!sender.isDestroyed()) sender.send(channel, streamId, text)
+      }
+      const emit = (text: string) => send('chat:delta', text)
+      const emitThought = (text: string) => send('chat:thought', text)
+      const emitStatus = (text: string) => send('chat:status', text)
 
       // <thought> 标签分流状态机：正文 → chat:delta，心路历程 → chat:thought。
       // 处理标签被网络分块截断的情况：结尾若是标签前缀则暂存，下一块再判断。
@@ -314,13 +402,13 @@ function createWindow(): void {
 
 app.whenReady().then(async () => {
   Menu.setApplicationMenu(null)
-  try {
-    sidecar = await startSidecar()
-  } catch (error) {
-    // 侧车起不来不阻塞窗口，设置页会提示本地服务离线
-    console.error(error)
-  }
+  // 先开窗口再起侧车：Python 冷启动要好几秒，不让用户对着空白等待。
+  // 渲染层的首个请求会经 ensureSidecar 等待同一个启动过程。
   createWindow()
+  ensureSidecar().catch((error) => {
+    // 侧车起不来不阻塞窗口，界面会提示本地服务离线并可重试
+    console.error(error)
+  })
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
@@ -332,5 +420,8 @@ app.on('window-all-closed', () => {
 })
 
 app.on('before-quit', () => {
+  quitting = true
+  for (const s of activeStreams.values()) s.controller.abort()
+  activeStreams.clear()
   stopSidecar()
 })
