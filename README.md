@@ -135,11 +135,40 @@ npm run dev
 
 首次进入后，在「设置」页填入 API Key 即可开始使用（也可直接写入 `server/.env`）。
 
+## 打包安装包
+
+一条命令生成 Windows 安装包（`dist/Emotional-AI-Setup-<版本号>.exe`）：
+
+```bash
+# 首次：安装打包依赖
+server\.venv\Scripts\pip install -r server/requirements-build.txt
+
+# 打包：PyInstaller 打后端 → electron-vite 构建界面 → electron-builder 生成 NSIS 安装包
+npm run dist
+```
+
+- 后端代码没改、只改了界面时，可用 `npm run dist:app` 跳过后端打包，快很多；
+- 安装包内含独立的后端 `server.exe`，用户电脑**无需安装 Python / Node**；
+- 用户数据（数据库、向量记忆、加密的 API Key、日志 `sidecar.log`）存放在
+  `%APPDATA%\emotional-ai`，与安装目录分离，卸载或覆盖安装都不会丢；
+- 未做代码签名，首次运行 Windows 可能提示「未知发布者」，点「更多信息 → 仍要运行」即可。
+
+> 若 electron-builder 报 `Cannot create symbolic link`（解压 winCodeSign 失败）：
+> 打开 Windows「开发者模式」，或手动把 `%LOCALAPPDATA%\electron-builder\Cache\winCodeSign\*.7z`
+> 解压到同目录下的 `winCodeSign-2.6.0` 文件夹（忽略两个 macOS 符号链接的报错）后重试。
+
+### 发布新版本
+
+1. 修改代码，并把 `package.json` 的 `version` 改高（如 `1.0.3` → `1.0.4`）；
+2. 运行 `npm run dist`，得到新的 `Emotional-AI-Setup-1.0.4.exe`；
+3. 直接运行新安装包即可覆盖升级（`appId` 不变，Windows 识别为同一软件），数据与设置保留；
+4. 若新版本改了数据库结构，在 `server/app/db/engine.py` 的 `_migrate_schema` 里补迁移。
+
 ## 技术栈
 
 | 层 | 技术 |
 | --- | --- |
-| 桌面壳 | Electron 34 · electron-vite · electron-builder |
+| 桌面壳 | Electron 34 · electron-vite · electron-builder（NSIS 安装包）· PyInstaller（后端打包） |
 | 界面 | React 18 · TypeScript · Zustand · Arco Design · SSE 流式渲染 |
 | 后端 | FastAPI · uvicorn（sidecar 子进程）· Pydantic v2 |
 | 存储 | SQLite（SQLModel）· LanceDB（向量，cosine top-k） |

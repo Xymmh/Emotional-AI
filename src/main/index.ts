@@ -9,6 +9,24 @@ import {
 } from './secure-store'
 import { onSidecarExit, SidecarInfo, startSidecar, stopSidecar } from './sidecar'
 
+// 统一用户数据目录为 %APPDATA%\emotional-ai：安装版 productName 是 "Emotional AI"，
+// 不固定的话会落到另一个目录，开发态里保存过的 Key / 设置在安装版里就「消失」了。
+// 必须在 app ready 之前设置。
+app.setPath('userData', join(app.getPath('appData'), 'emotional-ai'))
+app.setAppUserModelId('com.xymmh.emotionalai')
+
+// 单实例：重复打开时聚焦已有窗口，避免两个进程各拉一个侧车同时写同一份数据库
+const gotInstanceLock = app.requestSingleInstanceLock()
+if (!gotInstanceLock) {
+  app.quit()
+}
+app.on('second-instance', () => {
+  if (!mainWindow) return
+  if (mainWindow.isMinimized()) mainWindow.restore()
+  mainWindow.show()
+  mainWindow.focus()
+})
+
 let mainWindow: BrowserWindow | null = null
 let sidecar: SidecarInfo | null = null
 let starting: Promise<SidecarInfo> | null = null
@@ -401,6 +419,7 @@ function createWindow(): void {
 }
 
 app.whenReady().then(async () => {
+  if (!gotInstanceLock) return
   Menu.setApplicationMenu(null)
   // 先开窗口再起侧车：Python 冷启动要好几秒，不让用户对着空白等待。
   // 渲染层的首个请求会经 ensureSidecar 等待同一个启动过程。

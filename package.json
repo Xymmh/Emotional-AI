@@ -12,22 +12,66 @@
     "build": "electron-vite build",
     "start": "electron-vite preview",
     "typecheck:node": "tsc --noEmit -p tsconfig.node.json",
-    "typecheck:web": "tsc --noEmit -p tsconfig.web.json"
+    "typecheck:web": "tsc --noEmit -p tsconfig.web.json",
+    "build:sidecar": "cd server && .venv\\Scripts\\python.exe -m PyInstaller sidecar.spec --noconfirm",
+    "dist": "npm run build:sidecar && npm run build && electron-builder --win --x64",
+    "dist:app": "npm run build && electron-builder --win --x64"
   },
-  "dependencies": {
-    "@arco-design/web-react": "^2.66.1",
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1",
-    "zustand": "^5.0.2"
-  },
+  "dependencies": {},
   "devDependencies": {
+    "@arco-design/web-react": "^2.66.1",
     "@types/node": "^22.10.2",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.4",
     "electron": "^34.0.0",
+    "electron-builder": "^25.1.8",
     "electron-vite": "^3.1.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
     "typescript": "^5.7.2",
-    "vite": "^6.0.3"
+    "vite": "^6.0.3",
+    "zustand": "^5.0.2"
+  },
+  "build": {
+    "appId": "com.xymmh.emotionalai",
+    "productName": "Emotional AI",
+    "copyright": "© 2026 Nanyang Technological University · WANG QIALUN",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "out/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "server/dist/sidecar",
+        "to": "sidecar"
+      }
+    ],
+    "asar": true,
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Emotional AI",
+      "artifactName": "Emotional-AI-Setup-${version}.exe",
+      "deleteAppDataOnUninstall": false
+    }
   }
 }

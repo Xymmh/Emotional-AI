@@ -23,3 +23,7 @@ data/
 .idea/
 .DS_Store
 Thumbs.db
+
+# 打包产物
+server/build/
+server/dist/
