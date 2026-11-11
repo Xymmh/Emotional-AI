@@ -7,7 +7,7 @@ import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron'
 const appApi = {
   settings: {
     get: () => ipcRenderer.invoke('settings:get'),
-    save: (payload: { apiKey?: string; roleplayModel?: string }) =>
+    save: (payload: { apiKey?: string }) =>
       ipcRenderer.invoke('settings:save', payload),
     verify: (apiKey?: string) => ipcRenderer.invoke('settings:verify', apiKey),
   },

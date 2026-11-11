@@ -25,7 +25,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="Emotional AI Sidecar", version="1.0.3", lifespan=lifespan)
+app = FastAPI(title="Emotional AI Sidecar", version="1.0.4", lifespan=lifespan)
 
 app.include_router(settings_api.router)
 app.include_router(personas_api.router)

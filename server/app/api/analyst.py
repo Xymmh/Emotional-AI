@@ -18,11 +18,11 @@ from pydantic import BaseModel
 from volcenginesdkarkruntime import AsyncArk
 
 from app.api.security import require_sidecar_token
-from app.config import get_settings
 from app.db import crud
 from app.db.models import MessageCreate, PersonaUpdate
 from app.services import ark
 from app.services.context import collect_history
+from app.services.model_config import get_model_config
 from app.services.profile import schedule_maybe_auto_profile
 from app.services.runtime import state
 from app.services.tasks import spawn
@@ -90,11 +90,11 @@ def _classify_prompt(persona_name: str, content: str) -> str:
 
 async def _classify_input(persona_name: str, content: str) -> str:
     """分类节点：极短输出（一个词），决定是否需要调用整理 Agent。失败按 record。"""
-    settings = get_settings()
-    client = AsyncArk(api_key=state.api_key, base_url=settings.ark_base_url, timeout=30.0)
+    cfg = get_model_config()
+    client = AsyncArk(api_key=state.api_key, base_url=cfg.base_url, timeout=30.0)
     try:
         resp = await client.chat.completions.create(
-            model=settings.chat_model,
+            model=cfg.utility_model,
             messages=[{"role": "user", "content": _classify_prompt(persona_name, content)}],
             max_tokens=8,
             temperature=0.0,
@@ -134,11 +134,11 @@ async def _normalize_dialog(persona_name: str, content: str) -> list[str]:
     if len(content) > NORMALIZE_MAX_CHARS:
         # 太长的粘贴让模型逐句重写既慢又容易被 max_tokens 截断成残缺 JSON，直接按行用原文
         return _raw_lines(content)
-    settings = get_settings()
-    client = AsyncArk(api_key=state.api_key, base_url=settings.ark_base_url, timeout=90.0)
+    cfg = get_model_config()
+    client = AsyncArk(api_key=state.api_key, base_url=cfg.base_url, timeout=90.0)
     try:
         resp = await client.chat.completions.create(
-            model=settings.chat_model,
+            model=cfg.utility_model,
             messages=[{"role": "user", "content": _normalize_prompt(persona_name, content)}],
             max_tokens=4000,
             temperature=0.1,
@@ -193,11 +193,11 @@ async def _extract_observations(persona_name: str, analysis_text: str) -> list[s
     """从分析师结论中提炼 2~3 条结构化观察短句；失败返回空列表。"""
     if not analysis_text:
         return []
-    settings = get_settings()
-    client = AsyncArk(api_key=state.api_key, base_url=settings.ark_base_url, timeout=30.0)
+    cfg = get_model_config()
+    client = AsyncArk(api_key=state.api_key, base_url=cfg.base_url, timeout=30.0)
     try:
         resp = await client.chat.completions.create(
-            model=settings.chat_model,
+            model=cfg.utility_model,
             messages=[
                 {"role": "user", "content": _observation_prompt(persona_name, analysis_text)}
             ],
@@ -261,7 +261,7 @@ async def _post_turn_insights(
 
 @router.post("/stream", dependencies=[Depends(require_sidecar_token)])
 async def analyst_stream(body: AnalystStreamRequest):
-    settings = get_settings()
+    cfg = get_model_config()
     if not state.api_key:
         raise HTTPException(status_code=400, detail="未配置 API Key，请先到设置页保存")
 
@@ -283,7 +283,7 @@ async def analyst_stream(body: AnalystStreamRequest):
         return "data: " + json.dumps(obj, ensure_ascii=False) + "\n\n"
 
     async def gen():
-        client = AsyncArk(api_key=api_key, base_url=settings.ark_base_url, timeout=120.0)
+        client = AsyncArk(api_key=api_key, base_url=cfg.base_url, timeout=120.0)
         acc: list[str] = []
         dialog_lines: list[str] = []
         history: list = []  # 供收尾计算轮次号；未取到时按首轮处理
@@ -325,11 +325,11 @@ async def analyst_stream(body: AnalystStreamRequest):
 
             # ---- 分析师流式生成 ----
             stream = await client.chat.completions.create(
-                model=settings.analyst_model,
+                model=cfg.analyst_model,
                 messages=messages,  # type: ignore[arg-type]
                 stream=True,
                 max_tokens=1200,
-                temperature=0.6,
+                temperature=cfg.analyst_temperature,
             )
             async for chunk in stream:
                 if not chunk.choices:

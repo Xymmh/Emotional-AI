@@ -59,19 +59,20 @@ onSidecarExit(() => {
 })
 
 /**
- * 把本地保存的 Key 与扮演模型推送给侧车。
- * 开发态拉起的侧车不注入 Key、生产态也不注入模型选择，若不推送，
- * 重启应用后设置页保存过的配置就「失效」了。
+ * 把本地加密保存的 Key 推送给侧车（开发态拉起的侧车不会注入 Key）。
+ * 模型配置由侧车自己持久化（数据目录 model_settings.json），这里不再管理；
+ * 旧版本存在 config.json 里的扮演模型，在这里迁移给侧车一次后删除。
  */
 async function syncRuntime(info: SidecarInfo): Promise<void> {
   const apiKey = loadSecureValue('arkApiKey')
-  const roleplayModel = readConfig().roleplayModel
-  if (!apiKey && !roleplayModel) return
+  const legacyModel = readConfig().roleplayModel
+  if (!apiKey && !legacyModel) return
   try {
     await rawCall(info, '/api/settings/runtime', {
       method: 'PUT',
-      body: { api_key: apiKey || null, roleplay_model: roleplayModel || null },
+      body: { api_key: apiKey || null, roleplay_model: legacyModel || null },
     })
+    if (legacyModel) writeConfig({ roleplayModel: undefined })
   } catch (error) {
     console.error('同步运行时配置失败', error)
   }
@@ -134,8 +135,7 @@ ipcMain.handle('settings:get', async () => {
       has_key: hasSecureValue('arkApiKey'),
       key_hint: maskSecret(stored ?? ''),
       key_length: stored?.length ?? 0,
-      roleplay_model: readConfig().roleplayModel ?? '',
-      models: null,
+      roleplay_model: '',
       sidecar_offline: true,
     }
   }
@@ -150,22 +150,16 @@ ipcMain.handle('settings:verify', async (_event, apiKey?: string) => {
 
 ipcMain.handle(
   'settings:save',
-  async (_event, payload: { apiKey?: string; roleplayModel?: string }) => {
+  async (_event, payload: { apiKey?: string }) => {
     const newKey = payload.apiKey?.trim()
     if (newKey) {
       saveSecureValue('arkApiKey', newKey)
     }
-    if (payload.roleplayModel) {
-      writeConfig({ roleplayModel: payload.roleplayModel })
-    }
-    // 推送给后端使其立即生效（模型切换 / Key 更新都不用重启）
+    // 推送给后端使其立即生效，无需重启（模型配置走 /api/settings/models，不经这里）
     const effectiveKey = newKey || loadSecureValue('arkApiKey') || ''
     return callSidecar('/api/settings/runtime', {
       method: 'PUT',
-      body: {
-        api_key: effectiveKey || null,
-        roleplay_model: payload.roleplayModel ?? null,
-      },
+      body: { api_key: effectiveKey || null },
     })
   },
 )

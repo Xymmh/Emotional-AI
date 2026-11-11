@@ -1398,3 +1398,199 @@ body {
 .edit-form {
   min-width: 0;
 }
+
+/* ==== 模型设置页 ==== */
+
+.set-card > .set-field + .set-field,
+.set-card > .set-field + .set-inline-fields,
+.set-card > .set-inline-fields + .mem-status,
+.set-card > .set-field + .mem-status {
+  margin-top: 18px;
+}
+
+.set-card-note {
+  margin: -6px 0 14px;
+  line-height: 1.6;
+}
+
+.set-model-field + .set-model-field {
+  padding-top: 18px;
+  border-top: 1px dashed var(--border);
+}
+
+.set-label-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+}
+
+.set-label-row .set-label {
+  font-weight: 600;
+  color: var(--text);
+}
+
+.set-field-desc {
+  font-size: 12px;
+  color: var(--text-faint);
+  line-height: 1.6;
+  margin-top: -4px;
+}
+
+.set-link-btn {
+  padding: 0;
+  border: none;
+  background: transparent;
+  font-size: 12px;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.set-link-btn:hover:not(:disabled) {
+  color: var(--text);
+  text-decoration: underline;
+}
+
+.set-link-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.set-input-full {
+  flex: none;
+  width: 100%;
+}
+
+.set-input-narrow {
+  flex: none;
+  width: 140px;
+}
+
+.set-latency {
+  margin-left: 8px;
+  opacity: 0.7;
+  font-family: var(--mono);
+}
+
+.set-range-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.set-range-row input[type='range'] {
+  width: 180px;
+  accent-color: var(--text);
+}
+
+.set-range-value {
+  font-family: var(--mono);
+  color: var(--text);
+  width: 28px;
+}
+
+.set-range-hint {
+  color: var(--text-faint);
+}
+
+.set-inline-fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+}
+
+.set-seg {
+  display: inline-flex;
+  align-self: flex-start;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.set-seg-btn {
+  height: 32px;
+  padding: 0 14px;
+  border: none;
+  background: transparent;
+  font-size: 13px;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.set-seg-btn + .set-seg-btn {
+  border-left: 1px solid var(--border-strong);
+}
+
+.set-seg-btn.on {
+  background: var(--text);
+  color: #ffffff;
+}
+
+.mem-status {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px;
+  border-radius: 8px;
+  background: var(--bg-sidebar);
+  font-size: 12.5px;
+  color: var(--text-dim);
+}
+
+.mem-status.stale {
+  background: #fdf6e3;
+  color: #8a6d1a;
+}
+
+.mem-status-line {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  align-items: baseline;
+}
+
+.mem-status-sub {
+  color: var(--text-faint);
+  font-family: var(--mono);
+  font-size: 11.5px;
+}
+
+.mem-stale {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  line-height: 1.6;
+}
+
+.mem-progress {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.mem-progress-bar {
+  flex: 1;
+  height: 6px;
+  border-radius: 3px;
+  background: rgba(0, 0, 0, 0.08);
+  overflow: hidden;
+}
+
+.mem-progress-fill {
+  height: 100%;
+  background: var(--text);
+  transition: width 0.3s ease;
+}
+
+.mem-progress-text {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+
+.set-warn-text {
+  margin-top: 10px;
+  color: #8a6d1a;
+}

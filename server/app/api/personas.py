@@ -11,7 +11,6 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from app.api.security import require_sidecar_token
-from app.config import get_settings
 from app.db import crud
 from app.db.models import PersonaCreate, PersonaUpdate
 from app.services.vectorstore import get_vector_store
@@ -140,19 +139,13 @@ class MemorySearchRequest(BaseModel):
 
 @router.post("/{persona_id}/memories", dependencies=[Depends(require_sidecar_token)])
 async def upsert_memories(persona_id: str, body: MemoryUpsertRequest) -> dict:
-    """整体替换该 persona 的全部向量记忆。"""
-    settings = get_settings()
-    expected_dim = settings.embedding_dim
-    for item in body.items:
-        if len(item.vector) != expected_dim:
-            raise HTTPException(
-                status_code=400,
-                detail=f"向量维度应为 {expected_dim}，实际 {len(item.vector)}",
-            )
-    store = get_vector_store()
-    count = await store.upsert(
-        persona_id, [(item.text, item.vector) for item in body.items]
-    )
+    """整体替换该 persona 的全部向量记忆（向量维度须与当前索引一致，由存储层校验）。"""
+    try:
+        count = await get_vector_store().upsert(
+            persona_id, [(item.text, item.vector) for item in body.items]
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"upserted": count, "persona_id": persona_id}
 
 

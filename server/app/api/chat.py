@@ -18,11 +18,11 @@ from pydantic import BaseModel
 from volcenginesdkarkruntime import AsyncArk
 
 from app.api.security import require_sidecar_token
-from app.config import get_settings
 from app.db import crud
 from app.db.models import MessageCreate
 from app.services import ark
 from app.services.context import collect_history
+from app.services.model_config import get_model_config
 from app.services.runtime import state
 from app.services.tasks import spawn
 from app.services.vectorstore import INSIGHT_PREFIX, get_vector_store
@@ -114,7 +114,7 @@ def _sse(obj: dict) -> str:
 
 @router.post("/stream", dependencies=[Depends(require_sidecar_token)])
 async def chat_stream(body: ChatStreamRequest):
-    settings = get_settings()
+    cfg = get_model_config()
     if not state.api_key:
         raise HTTPException(status_code=400, detail="未配置 API Key，请先到设置页保存")
 
@@ -158,20 +158,19 @@ async def chat_stream(body: ChatStreamRequest):
 
     messages = [{"role": "system", "content": _build_system_prompt(persona, memories)}]
     messages.extend(chat_history)
-    model = state.roleplay_model
     api_key = state.api_key
 
     async def gen():
-        client = AsyncArk(api_key=api_key, base_url=settings.ark_base_url, timeout=120.0)
+        client = AsyncArk(api_key=api_key, base_url=cfg.base_url, timeout=120.0)
         acc: list[str] = []
         cancelled = False
         try:
             stream = await client.chat.completions.create(
-                model=model,
+                model=cfg.roleplay_model,
                 messages=messages,  # type: ignore[arg-type]
                 stream=True,
                 max_tokens=1500,
-                temperature=0.9,
+                temperature=cfg.roleplay_temperature,
             )
             async for chunk in stream:
                 if not chunk.choices:

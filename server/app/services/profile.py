@@ -11,9 +11,9 @@ import json
 
 from volcenginesdkarkruntime import AsyncArk
 
-from app.config import get_settings
 from app.db import crud
 from app.db.models import PersonaUpdate
+from app.services.model_config import get_model_config
 from app.services.runtime import state
 from app.services.tasks import spawn
 
@@ -70,7 +70,7 @@ async def build_profile(persona_id: str) -> dict:
 
 
 async def _build_profile_locked(persona_id: str) -> dict:
-    settings = get_settings()
+    cfg = get_model_config()
     if not state.api_key:
         raise ProfileError("未配置 API Key，请先到设置页保存")
     persona = await asyncio.to_thread(crud.get_persona, persona_id)
@@ -88,10 +88,10 @@ async def _build_profile_locked(persona_id: str) -> dict:
         for m in msgs[-HISTORY_LIMIT:]
     )
 
-    client = AsyncArk(api_key=state.api_key, base_url=settings.ark_base_url, timeout=60.0)
+    client = AsyncArk(api_key=state.api_key, base_url=cfg.base_url, timeout=60.0)
     try:
         resp = await client.chat.completions.create(
-            model=settings.analyst_model,
+            model=cfg.analyst_model,
             messages=[{"role": "user", "content": _profile_prompt(persona, dialog)}],
             max_tokens=400,
             temperature=0.3,
